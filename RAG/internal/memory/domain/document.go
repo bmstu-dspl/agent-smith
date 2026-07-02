@@ -50,6 +50,9 @@ func (d *Document) AddVersion(version *DocumentVersion, now time.Time) error {
 	if version.TenantID() != d.tenantID {
 		return ErrVersionTenantMismatch
 	}
+	if _, exists := d.versions[version.ID()]; exists {
+		return ErrVersionAlreadyExists
+	}
 
 	d.versions[version.ID()] = version
 	d.audit.UpdatedAt = now
@@ -59,7 +62,7 @@ func (d *Document) AddVersion(version *DocumentVersion, now time.Time) error {
 func (d *Document) PublishVersion(versionID VersionID, now time.Time) error {
 	version, ok := d.versions[versionID]
 	if !ok {
-		return ErrVersionNotPublishable
+		return ErrVersionNotFound
 	}
 	if d.publishedVersion != nil && *d.publishedVersion != versionID {
 		return ErrPublishedVersionExists
@@ -76,7 +79,7 @@ func (d *Document) PublishVersion(versionID VersionID, now time.Time) error {
 func (d *Document) ArchiveVersion(versionID VersionID, now time.Time) error {
 	version, ok := d.versions[versionID]
 	if !ok {
-		return ErrVersionArchived
+		return ErrVersionNotFound
 	}
 	if err := version.Archive(now); err != nil {
 		return err

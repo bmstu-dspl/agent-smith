@@ -20,6 +20,8 @@ var (
 	ErrChunkTenantMismatch     = errors.New("chunk tenant must match document version tenant")
 	ErrVersionTenantMismatch   = errors.New("version tenant must match document tenant")
 	ErrVersionDocumentMismatch = errors.New("version document id must match aggregate document id")
+	ErrVersionAlreadyExists    = errors.New("version already exists")
+	ErrVersionNotFound         = errors.New("version not found")
 	ErrPublishedVersionExists  = errors.New("published version already exists")
 	ErrVersionNotReviewable    = errors.New("version must be processed before review")
 	ErrVersionNotPublishable   = errors.New("only approved version can be published")
