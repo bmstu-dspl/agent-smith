@@ -2,7 +2,6 @@ import asyncio
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-# Параметры запуска сервера: Клиент сам порождает сервер как дочерний процесс
 # запуск - uv run python mcp_test_client.py
 
 server_params = StdioServerParameters(
