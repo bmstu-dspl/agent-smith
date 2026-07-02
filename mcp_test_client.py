@@ -29,5 +29,22 @@ async def main() -> None:
                 print("Результат вызова:", content.text)
 
 
+
+
+            result = await session.call_tool(
+                "create_booking",
+                {"check_in": "05-07-2026", "check_out": "08-07-2026", "guests": 2, "room_number": 203},
+            )
+            for content in result.content:
+                print("Результат create_booking:", content.text)
+
+            result = await session.call_tool(
+                "cancel_booking",
+                {"booking_id": "BK-1234"},
+            )
+            for content in result.content:
+                print("Результат cancel_booking:", content.text)
+
+
 if __name__ == "__main__":
     asyncio.run(main())
