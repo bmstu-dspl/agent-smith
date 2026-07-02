@@ -1,11 +1,16 @@
 import asyncio
 import logging
+import sys
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).parent))
+
 from config import BOT_TOKEN
 from aiogram import Bot, Dispatcher
 from aiogram.types import WebhookInfo
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
-from app.hendlers import router
+from app.handlers import router
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -33,7 +38,10 @@ async def on_shutdown(dispatcher: Dispatcher):
     logging.info("Webhook deleted")
 
 def main():
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
 
     app = web.Application()
 
