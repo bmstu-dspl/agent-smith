@@ -1,56 +1,68 @@
+import json
 import logging
-from typing import Optional
+from typing import Any, Dict, List
+
+import httpx
 from app.models import IncomingMessage
 
+logger = logging.getLogger(__name__)
+
+AI_CORE_URL = "http://localhost:8000/agent/process"
+
+
 class AIAgent:
-    """Заглушка AI агента"""
-    
-    def __init__(self):
-        self.logger = logging.getLogger(__name__)
-    
-    async def process_message(self, message: IncomingMessage) -> None:
-        """
-        Обработка сообщения AI агентом
-        Args:
-            message: Входящее сообщение от пользователя
-        """
-        # Логируем полученное сообщение
-        self.logger.info("=" * 50)
-        self.logger.info(" AI Agent получил сообщение:")
-        self.logger.info(f"Session ID: {message.session_id}")
-        self.logger.info(f"Сообщение: {message.user_message}")
-        
-        if message.metadata:
-            self.logger.info(f"Метаданные: {message.metadata}")
-        
-        self.logger.info(f"Время: {message.timestamp.isoformat()}")
-        self.logger.info("=" * 50)
-        
-        # Здесь можно добавить логику обработки сообщения?
-        
-        # Симуляция обработки
-        await self._simulate_processing()
-        
-        # Возвращаем результат (в реальном агенте здесь будет ответ)
-        return await self._generate_response(message)
-    
-    async def _simulate_processing(self) -> None:
-        """Симуляция обработки сообщения"""
-        # Имитация задержки обработки
-        pass
-    
-    async def _generate_response(self, message: IncomingMessage) -> dict:
-        """
-        Генерация ответа агента
-        
-        Returns:
-            dict: Ответ агента
-        """
-        return {
-            "status": "processed",
-            "message": "принял сообщение",
-            "session_id": message.session_id,
-            "original_message": message.user_message
-        }
+    async def process_message(self, message: IncomingMessage) -> Dict[str, Any]:
+        # Сериализуем модель. Для Pydantic v2 используем model_dump(mode="json")
+        # Если у вас Pydantic v1, замените на message.dict()
+        payload = message.model_dump(mode="json")
+
+        full_text = ""
+        buttons: List[Dict[str, str]] = []
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                async with client.stream("POST", AI_CORE_URL, json=payload) as response:
+                    response.raise_for_status()
+
+                    async for line in response.aiter_lines():
+                        if not line.strip():
+                            continue
+
+                        try:
+                            event = json.loads(line)
+                        except json.JSONDecodeError as e:
+                            logger.error(f"Ошибка парсинга строки NDJSON: {line} | {e}")
+                            continue
+
+                        event_type = event.get("type")
+
+                        if event_type == "buttons":
+                            raw_buttons = event.get("buttons", [])
+                            buttons = [
+                                {"text": b["text"], "callback_data": b["callback_data"]}
+                                for b in raw_buttons
+                            ]
+                            logger.info(f"Получено кнопок: {len(buttons)}")
+
+                        elif event_type == "text_chunk":
+                            chunk = event.get("content", "")
+                            full_text += chunk
+                            logger.debug(f"Чанк текста: {chunk}")
+
+                        elif event_type == "end":
+                            logger.info("Поток завершён")
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Ошибка HTTP при обращении к AI-ядру: {e.response.status_code} {e.response.text}")
+            raise
+        except httpx.RequestError as e:
+            logger.error(f"Ошибка сети при соединении с AI-ядром: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Неизвестная ошибка в process_message: {e}", exc_info=True)
+            raise
+
+        return {"text": full_text.strip(), "buttons": buttons}
+
 
 ai_agent = AIAgent()
