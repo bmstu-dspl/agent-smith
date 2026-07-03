@@ -1,17 +1,23 @@
-# app/handlers.py
-
+import json
 import logging
-from aiogram import Router, types, F
+from datetime import datetime, timezone
+
+import httpx
+from aiogram import Router, F
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
+from aiogram.exceptions import TelegramBadRequest
 
 from app.models import IncomingMessage
-from app.services.ai_agent import ai_agent
 from app.middleware.session_middleware import SessionMiddleware
 
 router = Router()
 router.message.middleware(SessionMiddleware())
+
 logger = logging.getLogger(__name__)
+
+# URL вашего AI-ядра, вынесите в config при необходимости
+AI_CORE_URL = "http://localhost:8000/agent/process"
 
 
 @router.message(Command("start"))
@@ -24,21 +30,74 @@ async def cmd_start(message: Message):
 
 @router.message(F.text)
 async def handle_message(message: Message, session_id: str = None, user_metadata: dict = None):
-    # Создаём модель запроса
-    incoming_message = IncomingMessage(
+    """
+    Принимает текстовое сообщение, отправляет в AI-ядро и стримит ответ,
+    редактируя сообщение в реальном времени.
+    """
+    # Формируем объект запроса (Pydantic v2)
+    incoming = IncomingMessage(
         session_id=session_id or f"temp_{message.from_user.id}",
         user_message=message.text,
-        metadata=user_metadata or {}
+        metadata=user_metadata or {},
+        timestamp=datetime.now(timezone.utc)
     )
 
-    # Отправляем индикатор набора текста
+    # Отправляем начальное сообщение-заглушку, которое будем редактировать
+    sent_message = await message.answer("⏳ Генерация ответа...")
+    # Показываем статус "печатает"
     await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
 
+    full_text = ""
+    buttons = []
+    last_edit_text = ""  # для минимизации количества запросов к Telegram
+
     try:
-        # Получаем структурированный ответ от AI-ядра
-        response = await ai_agent.process_message(incoming_message)
-        text = response.get("text", "Пустой ответ от агента")
-        buttons = response.get("buttons", [])
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            async with client.stream(
+                "POST",
+                AI_CORE_URL,
+                json=incoming.model_dump(mode="json")
+            ) as response:
+                response.raise_for_status()
+
+                async for line in response.aiter_lines():
+                    if not line.strip():
+                        continue
+
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        logger.error(f"Невалидный JSON в строке: {line}")
+                        continue
+
+                    etype = event.get("type")
+
+                    if etype == "text_chunk":
+                        chunk = event.get("content", "")
+                        full_text += chunk
+
+                        # Редактируем сообщение, но не слишком часто (избегаем флуда)
+                        new_text = full_text + "▌"
+                        if new_text != last_edit_text:
+                            try:
+                                await sent_message.edit_text(new_text)
+                                last_edit_text = new_text
+                            except TelegramBadRequest as e:
+                                if "message is not modified" not in str(e):
+                                    logger.warning(f"Ошибка при редактировании: {e}")
+                                # если сообщение не изменилось, игнорируем
+
+                    elif etype == "buttons":
+                        raw_buttons = event.get("buttons", [])
+                        buttons = [
+                            {"text": b["text"], "callback_data": b["callback_data"]}
+                            for b in raw_buttons
+                        ]
+                        logger.info(f"Получено кнопок: {len(buttons)}")
+
+                    elif etype == "end":
+                        logger.info("Поток завершён, отправляем финальное сообщение")
+                        break  # выходим из цикла, дальше финальная отправка
 
         # Формируем клавиатуру, если есть кнопки
         reply_markup = None
@@ -51,12 +110,23 @@ async def handle_message(message: Message, session_id: str = None, user_metadata
             )
             reply_markup = keyboard
 
-        # Отправляем ответ пользователю
-        await message.answer(text, reply_markup=reply_markup)
+        # Отправляем финальный текст без курсора
+        final_text = full_text.strip() or "Агент вернул пустой ответ."
+        await sent_message.edit_text(final_text, reply_markup=reply_markup)
 
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Ошибка HTTP {e.response.status_code}: {e.response.text}")
+        await sent_message.edit_text("Ошибка AI-ядра. Попробуйте позже.")
+    except httpx.RequestError as e:
+        logger.error(f"Сетевая ошибка: {e}")
+        await sent_message.edit_text("Не удалось соединиться с AI-ядром.")
     except Exception as e:
-        logger.error(f"Ошибка при обработке сообщения: {e}", exc_info=True)
-        await message.answer("Произошла ошибка при обращении к AI-агенту. Попробуйте позже.")
+        logger.error(f"Неизвестная ошибка: {e}", exc_info=True)
+        # Не пытаемся редактировать сообщение, если оно уже могло быть удалено
+        try:
+            await sent_message.edit_text("Произошла непредвиденная ошибка.")
+        except Exception:
+            pass
 
 
 @router.message()
