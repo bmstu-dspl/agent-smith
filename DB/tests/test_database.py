@@ -1,120 +1,78 @@
 from __future__ import annotations
 
+import os
 from unittest import TestCase
-from unittest.mock import Mock
+from unittest.mock import patch
 
-from DB import DatabaseConfig, PostgresDatabase, QueryResult
+from DB import (
+    DatabaseConfig,
+    DatabaseConfigurationError,
+    GraphEdge,
+    GraphNode,
+    Migration,
+    Migrator,
+    PostgresDatabase,
+)
+from DB._graph import _json
 
 
-class PostgresDatabaseTestCase(TestCase):
-    def test_execute_and_fetch(self) -> None:
-        connection = _FakeConnection()
-        database = PostgresDatabase(
-            DatabaseConfig(
-                dsn="postgresql://user:password@localhost:5432/rag",
-                pragmas=("SET search_path TO public;",),
-            ),
-            connection_factory=lambda *args, **kwargs: connection,
+class DatabaseConfigTestCase(TestCase):
+    def test_from_env_builds_dsn(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "POSTGRES_HOST": "localhost",
+                "POSTGRES_PORT": "5432",
+                "POSTGRES_DB": "agent_smith",
+                "POSTGRES_USER": "agent_smith",
+                "POSTGRES_PASSWORD": "secret",
+                "POSTGRES_MIN_POOL_SIZE": "2",
+                "POSTGRES_MAX_POOL_SIZE": "8",
+                "POSTGRES_SESSION_STATEMENTS": "SET search_path TO public;SET TIME ZONE 'UTC'",
+            },
+            clear=True,
+        ):
+            config = DatabaseConfig.from_env()
+
+        self.assertEqual(config.dsn, "postgresql://agent_smith:secret@localhost:5432/agent_smith")
+        self.assertEqual(config.min_pool_size, 2)
+        self.assertEqual(config.max_pool_size, 8)
+        self.assertEqual(config.session_statements, ("SET search_path TO public", "SET TIME ZONE 'UTC'"))
+
+    def test_from_env_requires_values(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(DatabaseConfigurationError):
+                DatabaseConfig.from_env()
+
+
+class MigratorTestCase(TestCase):
+    def test_load_migrations(self) -> None:
+        migrations = Migrator().load()
+        self.assertGreaterEqual(len(migrations), 2)
+        self.assertEqual(migrations[0].version, "0001")
+
+
+class GraphValueObjectsTestCase(TestCase):
+    def test_json_serializer_is_stable(self) -> None:
+        payload = _json({"b": 2, "a": 1})
+        self.assertEqual(payload, '{"a": 1, "b": 2}')
+
+    def test_graph_records_are_constructible(self) -> None:
+        node = GraphNode(node_id="user-1", node_type="user", properties={"name": "Alice"})
+        edge = GraphEdge(
+            edge_id="edge-1",
+            from_node_id="user-1",
+            to_node_id="project-1",
+            edge_type="owns",
+            properties={"role": "owner"},
         )
 
-        database.initialize()
-        result = database.execute(
-            "INSERT INTO documents (id, title) VALUES (%s, %s);",
-            ("doc-1", "Architecture"),
-        )
-
-        self.assertIsInstance(result, QueryResult)
-        self.assertEqual(result.rows_affected, 1)
-
-        row = database.fetch_one(
-            "SELECT id, title FROM documents WHERE id = %s;",
-            ("doc-1",),
-        )
-        self.assertEqual(row, {"id": "doc-1", "title": "Architecture"})
-        self.assertIn("SET search_path TO public;", connection.executed_sql)
-
-    def test_transaction_rolls_back_on_error(self) -> None:
-        connection = _FakeConnection()
-        database = PostgresDatabase(
-            DatabaseConfig(dsn="postgresql://user:password@localhost:5432/rag"),
-            connection_factory=lambda *args, **kwargs: connection,
-        )
-
-        with self.assertRaises(RuntimeError):
-            with database.transaction() as transaction:
-                transaction.execute(
-                    "INSERT INTO notes (id, body) VALUES (%s, %s);",
-                    ("note-1", "body"),
-                )
-                raise RuntimeError("boom")
-
-        self.assertTrue(connection.rollback_called)
-        self.assertFalse(connection.commit_called)
-
-    def test_executemany_uses_cursor_api(self) -> None:
-        connection = _FakeConnection()
-        database = PostgresDatabase(
-            DatabaseConfig(dsn="postgresql://user:password@localhost:5432/rag"),
-            connection_factory=lambda *args, **kwargs: connection,
-        )
-
-        result = database.executemany(
-            "INSERT INTO notes (id, body) VALUES (%s, %s);",
-            [("note-1", "first"), ("note-2", "second")],
-        )
-
-        self.assertEqual(result.rows_affected, 2)
-        self.assertEqual(connection.cursor_instance.executemany_calls, 1)
+        self.assertEqual(node.node_type, "user")
+        self.assertEqual(edge.edge_type, "owns")
 
 
-class _FakeCursor:
-    def __init__(self, sql: str) -> None:
-        self.sql = sql
-        self.rowcount = 1
-
-    def fetchone(self) -> dict[str, object] | None:
-        if "SELECT id, title" in self.sql:
-            return {"id": "doc-1", "title": "Architecture"}
-        return None
-
-    def fetchall(self) -> list[dict[str, object]]:
-        if "SELECT" in self.sql:
-            return [{"id": "doc-1", "title": "Architecture"}]
-        return []
-
-
-class _FakeConnection:
-    def __init__(self) -> None:
-        self.executed_sql: list[str] = []
-        self.rollback_called = False
-        self.commit_called = False
-        self.close = Mock()
-        self.cursor_instance = _FakeCursorContextManager()
-
-    def execute(self, sql: str, parameters=()) -> _FakeCursor:
-        self.executed_sql.append(sql)
-        return _FakeCursor(sql)
-
-    def cursor(self) -> _FakeCursorContextManager:
-        return self.cursor_instance
-
-    def rollback(self) -> None:
-        self.rollback_called = True
-
-    def commit(self) -> None:
-        self.commit_called = True
-
-
-class _FakeCursorContextManager:
-    def __init__(self) -> None:
-        self.rowcount = 2
-        self.executemany_calls = 0
-
-    def __enter__(self) -> _FakeCursorContextManager:
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        return None
-
-    def executemany(self, sql: str, parameters) -> None:
-        self.executemany_calls += 1
+class PostgresDatabaseLifecycleTestCase(TestCase):
+    def test_quote_identifier_requires_open_pool(self) -> None:
+        database = PostgresDatabase(DatabaseConfig(dsn="postgresql://user:password@localhost:5432/rag"))
+        with self.assertRaisesRegex(Exception, "pool is not open"):
+            database.quote_identifier("graph_nodes")

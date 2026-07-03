@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from dotenv import dotenv_values
 
-from DB import DatabaseConfig, PostgresDatabase
+from DB import DatabaseConfig, GraphEdge, GraphNode, GraphStore, Migrator, PostgresDatabase
 
 
 class PostgresDatabaseIntegrationTestCase(TestCase):
@@ -23,37 +23,46 @@ class PostgresDatabaseIntegrationTestCase(TestCase):
         cls._database = PostgresDatabase(
             DatabaseConfig(
                 dsn=_dsn_from_env(cls._env),
-                pragmas=(f"SET search_path TO {cls._schema}, public;",),
+                min_pool_size=1,
+                max_pool_size=4,
+                session_statements=(f"SET search_path TO {cls._schema}, public",),
             )
         )
-
-        cls._database.initialize()
+        cls._database.open()
         cls._database.execute(f'CREATE SCHEMA "{cls._schema}";')
-        cls._database.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-        cls._database.execute(
+        cls._database.apply_migrations(Migrator().load())
+        cls._graph = GraphStore(cls._database)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._database.execute(f'DROP SCHEMA IF EXISTS "{cls._schema}" CASCADE;')
+        cls._database.close()
+
+    def test_healthcheck(self) -> None:
+        health = self._database.healthcheck()
+        self.assertIn("database_name", health)
+        self.assertEqual(health["schema_name"], self._schema)
+
+    def test_execute_and_fetch_roundtrip(self) -> None:
+        result = self._database.execute(
             """
-            CREATE TABLE integration_notes (
+            CREATE TABLE IF NOT EXISTS integration_notes (
                 id TEXT PRIMARY KEY,
                 body TEXT NOT NULL,
                 embedding vector(3)
             );
             """
         )
+        self.assertGreaterEqual(result.rows_affected, 0)
 
-    @classmethod
-    def tearDownClass(cls) -> None:
-        cls._database.execute(f'DROP SCHEMA IF EXISTS "{cls._schema}" CASCADE;')
-
-    def test_execute_and_fetch_roundtrip(self) -> None:
-        result = self._database.execute(
+        self._database.execute(
             """
             INSERT INTO integration_notes (id, body, embedding)
-            VALUES (%s, %s, '[1,2,3]');
+            VALUES (%s, %s, '[1,2,3]')
+            ON CONFLICT (id) DO UPDATE SET body = EXCLUDED.body;
             """,
             ("note-1", "first note"),
         )
-
-        self.assertEqual(result.rows_affected, 1)
 
         row = self._database.fetch_one(
             """
@@ -63,36 +72,27 @@ class PostgresDatabaseIntegrationTestCase(TestCase):
             """,
             ("note-1",),
         )
-
-        self.assertEqual(
-            row,
-            {"id": "note-1", "body": "first note", "embedding": "[1,2,3]"},
-        )
+        self.assertEqual(row, {"id": "note-1", "body": "first note", "embedding": "[1,2,3]"})
 
     def test_executemany_and_fetch_all(self) -> None:
-        result = self._database.executemany(
+        self._database.execute(
             """
-            INSERT INTO integration_notes (id, body, embedding)
-            VALUES (%s, %s, %s);
-            """,
-            [
-                ("note-2", "second note", "[2,2,2]"),
-                ("note-3", "third note", "[3,3,3]"),
-            ],
+            CREATE TABLE IF NOT EXISTS batch_notes (
+                id TEXT PRIMARY KEY,
+                body TEXT NOT NULL
+            );
+            """
         )
-
+        result = self._database.executemany(
+            "INSERT INTO batch_notes (id, body) VALUES (%s, %s) ON CONFLICT (id) DO NOTHING;",
+            [("note-2", "second note"), ("note-3", "third note")],
+        )
         self.assertGreaterEqual(result.rows_affected, 0)
 
         rows = self._database.fetch_all(
-            """
-            SELECT id, body
-            FROM integration_notes
-            WHERE id IN (%s, %s)
-            ORDER BY id;
-            """,
+            "SELECT id, body FROM batch_notes WHERE id IN (%s, %s) ORDER BY id;",
             ("note-2", "note-3"),
         )
-
         self.assertEqual(
             rows,
             [
@@ -102,40 +102,66 @@ class PostgresDatabaseIntegrationTestCase(TestCase):
         )
 
     def test_transaction_rolls_back_on_error(self) -> None:
+        self._database.execute(
+            """
+            CREATE TABLE IF NOT EXISTS rollback_notes (
+                id TEXT PRIMARY KEY,
+                body TEXT NOT NULL
+            );
+            """
+        )
         with self.assertRaises(RuntimeError):
             with self._database.transaction() as connection:
                 connection.execute(
-                    """
-                    INSERT INTO integration_notes (id, body, embedding)
-                    VALUES (%s, %s, '[9,9,9]');
-                    """,
+                    "INSERT INTO rollback_notes (id, body) VALUES (%s, %s);",
                     ("note-rollback", "should disappear"),
                 )
                 raise RuntimeError("boom")
 
         row = self._database.fetch_one(
-            "SELECT id FROM integration_notes WHERE id = %s;",
+            "SELECT id FROM rollback_notes WHERE id = %s;",
             ("note-rollback",),
         )
-
         self.assertIsNone(row)
 
-    def test_initialize_applies_search_path(self) -> None:
-        self._database.execute(
-            """
-            INSERT INTO integration_notes (id, body, embedding)
-            VALUES (%s, %s, '[4,4,4]')
-            ON CONFLICT (id) DO NOTHING;
-            """,
-            ("note-search-path", "search path note"),
+    def test_migrations_table_created(self) -> None:
+        rows = self._database.fetch_all("SELECT version, name FROM schema_migrations ORDER BY version;")
+        self.assertEqual([row["version"] for row in rows], ["0001", "0002"])
+
+    def test_graph_store_roundtrip_and_traversal(self) -> None:
+        self._graph.upsert_node(GraphNode(node_id="user-1", node_type="user", properties={"name": "Alice"}))
+        self._graph.upsert_node(GraphNode(node_id="project-1", node_type="project", properties={"name": "Smith"}))
+        self._graph.upsert_node(GraphNode(node_id="doc-1", node_type="document", properties={"title": "Spec"}))
+        self._graph.upsert_edge(
+            GraphEdge(
+                edge_id="edge-1",
+                from_node_id="user-1",
+                to_node_id="project-1",
+                edge_type="owns",
+                properties={"role": "owner"},
+            )
+        )
+        self._graph.upsert_edge(
+            GraphEdge(
+                edge_id="edge-2",
+                from_node_id="project-1",
+                to_node_id="doc-1",
+                edge_type="contains",
+                properties={},
+            )
         )
 
-        row = self._database.fetch_one(
-            "SELECT body FROM integration_notes WHERE id = %s;",
-            ("note-search-path",),
-        )
+        node = self._graph.get_node("user-1")
+        self.assertIsNotNone(node)
+        assert node is not None
+        self.assertEqual(node["properties"]["name"], "Alice")
 
-        self.assertEqual(row, {"body": "search path note"})
+        neighbors = self._graph.get_neighbors("user-1")
+        self.assertEqual(len(neighbors), 1)
+        self.assertEqual(neighbors[0]["node_id"], "project-1")
+
+        traversal = self._graph.traverse("user-1", max_depth=3)
+        self.assertEqual([row["to_node_id"] for row in traversal], ["project-1", "doc-1"])
 
 
 def _dsn_from_env(env: dict[str, str]) -> str:
