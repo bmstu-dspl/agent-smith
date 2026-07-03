@@ -1,4 +1,4 @@
-from .memory import InMemoryDocumentStore, MemoryModule
+from .memory import InMemoryDocumentStore, MemoryModule, PostgresDocumentStore
 from .types import (
     AddDocumentVersionCommand,
     ApproveVersionCommand,
@@ -20,5 +20,6 @@ __all__ = [
     "InMemoryDocumentStore",
     "MarkVersionProcessedCommand",
     "MemoryModule",
+    "PostgresDocumentStore",
     "PublishVersionCommand",
 ]
