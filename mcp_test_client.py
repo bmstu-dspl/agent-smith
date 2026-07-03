@@ -20,6 +20,7 @@ async def main() -> None:
             tools = await session.list_tools()
             print("Доступные инструменты:", [t.name for t in tools.tools])
 
+
             # вызов инструмента с тестовыми параметрами
             result = await session.call_tool(
                 "check_room_availability",
@@ -29,8 +30,7 @@ async def main() -> None:
                 print("Результат вызова:", content.text)
 
 
-
-
+            # еще инструменты
             result = await session.call_tool(
                 "create_booking",
                 {"check_in": "05-07-2026", "check_out": "08-07-2026", "guests": 2, "room_number": 203},
@@ -44,6 +44,15 @@ async def main() -> None:
             )
             for content in result.content:
                 print("Результат cancel_booking:", content.text)
+
+
+            # пример с ошибкой
+            result = await session.call_tool(
+                "check_room_availability",
+                {"check_in": "05-12-2025", "check_out": "08-07-2026", "guests": 2},
+            )
+            for content in result.content:
+                print("Результат:", content.text)
 
 
 if __name__ == "__main__":
