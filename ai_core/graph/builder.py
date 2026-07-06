@@ -1,5 +1,9 @@
 import asyncio
+import os
 from collections.abc import AsyncIterator
+
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 
 from ai_core.contracts.schemas import Button, IncomingMessage
 
@@ -36,6 +40,59 @@ class StubGraph:
             yield word + " "
 
 
+def _chunk_to_text(chunk: object) -> str:
+    content = getattr(chunk, "content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if isinstance(item, dict) and item.get("type") == "text":
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
+    return ""
+
+
+def build_llm():
+    provider = os.getenv("LLM_PROVIDER", "google")
+    model = os.getenv("LLM_MODEL", "gemini-2.0-flash")
+
+    if provider == "google":
+        if not os.getenv("GOOGLE_API_KEY"):
+            return None
+        return ChatGoogleGenerativeAI(model=model, temperature=0.2)
+
+    if provider == "openai":
+        if not os.getenv("OPENAI_API_KEY"):
+            return None
+        return ChatOpenAI(model=model, temperature=0.2)
+
+    raise ValueError(f"Unsupported LLM_PROVIDER: {provider}")
+
+
+class LLMGraph(StubGraph):
+    def __init__(self, llm) -> None:
+        self.llm = llm
+
+    async def astream_response(self, payload: IncomingMessage) -> AsyncIterator[str]:
+        prompt = (
+            "Ты помощник в Telegram. Отвечай кратко, по делу и на русском языке. "
+            f"Сообщение пользователя: {payload.user_message}"
+        )
+        async for chunk in self.llm.astream(prompt):
+            text = _chunk_to_text(chunk)
+            if text:
+                yield text
+
+
 def build_graph(checkpointer=None) -> StubGraph:
     # позже: StateGraph(...).compile(checkpointer=checkpointer)
+    llm = build_llm()
+    if llm is not None:
+        return LLMGraph(llm=llm)
     return StubGraph()
