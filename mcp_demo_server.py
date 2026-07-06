@@ -1,13 +1,19 @@
+import os
 import random
 from datetime import datetime
 
+from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
-from errors import BookingUnavailableError, ValidationError, safe_tool
+from errors import BookingUnavailableError, ValidationError, require_env, safe_tool
+
+load_dotenv()
 
 mcp = FastMCP("Demo Booking Server")
 
-# uv run python mcp_registry_client.py - запуск
+# Заполнится в initialize_plugin() перед стартом
+HOTEL_BOOKING_SITE_URL: str | None = None
+
 
 def _parse_date(value: str, field_name: str) -> datetime:
     try:
@@ -18,19 +24,20 @@ def _parse_date(value: str, field_name: str) -> datetime:
         )
 
 
-def _validate_dates(check_in: str, check_out: str) -> None:
+def _validate_dates(check_in: str, check_out: str) -> tuple[datetime, datetime]:
     d_in = _parse_date(check_in, "check_in")
     d_out = _parse_date(check_out, "check_out")
     if d_out <= d_in:
         raise ValidationError("Дата выезда должна быть позже даты заезда")
     if d_in.date() < datetime.now().date():
         raise ValidationError("Дата заезда не может быть в прошлом")
+    return d_in, d_out
 
 
 @mcp.tool()
 @safe_tool
-def check_room_availability(check_in: str, check_out: str, guests: int) -> str:
-    """Проверить наличие свободных номеров на указанные даты.
+def search_available_rooms(check_in: str, check_out: str, guests: int) -> str:
+    """Найти доступные номера на указанные даты.
 
     Args:
         check_in: дата заезда в формате ДД-ММ-ГГГГ
@@ -39,54 +46,57 @@ def check_room_availability(check_in: str, check_out: str, guests: int) -> str:
     """
     _validate_dates(check_in, check_out)
     if guests <= 0:
-        raise ValidationError("Количество гостей должно быть больше 0")
+        raise ValidationError("Количество гостей должно быть больше нуля")
 
-    # Заглушка: имитируем, что иногда номеров действительно нет
+    # Заглушка
     if random.random() < 0.2:
         raise BookingUnavailableError("На выбранные даты свободных номеров нет")
 
-    return f"Найден номер 203, {guests} гостей, {check_in} - {check_out}, 5000 ₽/ночь"
+    return [
+        {"room_type": "1270", "offer_id": "439000", "name": "Стандарт двухместный", "price": 8000},
+        {"room_type": "1271", "offer_id": "439001", "name": "Делюкс с видом на море", "price": 12000},
+    ]
 
 
 @mcp.tool()
 @safe_tool
-def create_booking(check_in: str, check_out: str, guests: int, room_number: int) -> str:
-    """Создать бронирование на указанный номер и даты.
+def generate_booking_link(room_type: str, offer_id: str, check_in: str, check_out: str) -> str:
+    """Сформировать ссылку на предзаполненную форму бронирования.
+
+    Параметры room_type и offer_id берутся из результата search_available_rooms.
 
     Args:
+        room_type: id категории номера
+        offer_id: id тарифа/предложения
         check_in: дата заезда в формате ДД-ММ-ГГГГ
         check_out: дата выезда в формате ДД-ММ-ГГГГ
-        guests: количество гостей
-        room_number: номер комнаты (взять из check_room_availability)
     """
-    _validate_dates(check_in, check_out)
-    if guests <= 0:
-        raise ValidationError("Количество гостей должно быть более 0")
+    d_in, d_out = _validate_dates(check_in, check_out)
+    nights = (d_out - d_in).days
+    iso_date = d_in.strftime("%Y-%m-%d")
 
-    booking_id = f"BK-{random.randint(1000, 9999)}"
-    return f"Бронирование создано: {booking_id}, номер {room_number}, {check_in} - {check_out}, {guests} гостей"
+    return (
+        f"{HOTEL_BOOKING_SITE_URL}?be-offer={offer_id}&room-type={room_type}"
+        f"&date={iso_date}&nights={nights}"
+    )
 
 
 @mcp.tool()
 @safe_tool
-def cancel_booking(booking_id: str) -> str:
-    """Отменить существующее бронирование по его идентификатору.
-
-    Args:
-        booking_id: идентификатор брони (например, BK-1234)
-    """
-    if not booking_id.startswith("BK-"):
-        raise ValidationError("Некорректный формат идентификатора брони, ожидается вид BK-1234")
-
-    return f"Бронирование {booking_id} отменено"
+def get_booking_management_info() -> str:
+    """Объяснить гостю, как самостоятельно изменить или отменить существующую бронь."""
+    return (
+        "Чтобы изменить или отменить бронирование, перейдите по ссылке "
+        "«Управлять бронированием» в письме-подтверждении, которое пришло на вашу "
+        "почту после оформления брони. Там нужно ввести номер бронирования и код "
+        "доступа, указанный в том же письме."
+    )
 
 
 def initialize_plugin() -> None:
-    """Проверка обязательных настроек перед стартом плагина.
-
-    Сейчас список пуст — заглушка не требует секретов
-    """
-    pass
+    """Проверка обязательных настроек перед стартом плагина."""
+    global HOTEL_BOOKING_SITE_URL
+    HOTEL_BOOKING_SITE_URL = require_env("HOTEL_BOOKING_SITE_URL")
 
 
 if __name__ == "__main__":
