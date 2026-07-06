@@ -81,5 +81,14 @@ def cancel_booking(booking_id: str) -> str:
     return f"Бронирование {booking_id} отменено"
 
 
+def initialize_plugin() -> None:
+    """Проверка обязательных настроек перед стартом плагина.
+
+    Сейчас список пуст — заглушка не требует секретов
+    """
+    pass
+
+
 if __name__ == "__main__":
+    initialize_plugin()
     mcp.run()
