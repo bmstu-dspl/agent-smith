@@ -1,0 +1,7 @@
+version: "2"
+authtoken:
+tunnels:
+  bot:
+    proto: http
+    addr: bot:8080
+    domain: sycamore-glaucoma-citadel.ngrok-free.dev

@@ -1,4 +1,7 @@
 import json
+
+import os 
+
 import logging
 from datetime import datetime, timezone
 
@@ -16,8 +19,7 @@ router.message.middleware(SessionMiddleware())
 
 logger = logging.getLogger(__name__)
 
-# URL вашего AI-ядра, вынесите в config при необходимости
-AI_CORE_URL = "http://localhost:8000/agent/process"
+AI_CORE_URL = os.getenv('AI_AGENT_URL', 'http://ai_agent:8000') + "/agent/process"
 
 
 @router.message(Command("start"))
@@ -76,7 +78,6 @@ async def handle_message(message: Message, session_id: str = None, user_metadata
                         chunk = event.get("content", "")
                         full_text += chunk
 
-                        # Редактируем сообщение, но не слишком часто (избегаем флуда)
                         new_text = full_text + "▌"
                         if new_text != last_edit_text:
                             try:
@@ -122,7 +123,6 @@ async def handle_message(message: Message, session_id: str = None, user_metadata
         await sent_message.edit_text("Не удалось соединиться с AI-ядром.")
     except Exception as e:
         logger.error(f"Неизвестная ошибка: {e}", exc_info=True)
-        # Не пытаемся редактировать сообщение, если оно уже могло быть удалено
         try:
             await sent_message.edit_text("Произошла непредвиденная ошибка.")
         except Exception:

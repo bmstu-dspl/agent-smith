@@ -1,0 +1,45 @@
+services:
+  bot:
+    ports:
+      - "8080:8080"
+    environment:
+      - AI_AGENT_URL=http://ai_agent:8000
+      - WEBHOOK_HOST=https://sycamore-glaucoma-citadel.ngrok-free.dev
+    depends_on:
+      - ai_agent
+      - postgres
+    command: ["uv", "run", "--no-sync", "python", "run.py"]
+
+  ngrok:
+    image: ngrok/ngrok:latest
+    restart: unless-stopped
+    command:
+      - "start"
+      - "--all"
+      - "--config"
+      - "/etc/ngrok/ngrok.yml"
+    volumes:
+      - ./ngrok.yml:/etc/ngrok/ngrok.yml
+    ports:
+      - "4040:4040"
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+    depends_on:
+      - bot
+
+  ai_agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.ai_agent
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - LOG_LEVEL=${LOG_LEVEL}
+      - WATCHFILES_FORCE_POLLING=true  # Для Windows
+    depends_on:
+      - postgres
+    volumes:
+      - ./ai_core:/app/ai_core  
+    command: ["uv", "run", "--no-sync", "uvicorn", "ai_core.main:app", "--reload", "--host", "0.0.0.0", "--port", "8000"]
