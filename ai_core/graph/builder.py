@@ -6,6 +6,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 
 from ai_core.contracts.schemas import Button, IncomingMessage
+from ai_core.graph.prompts import AGENT_SYSTEM_PROMPT
 
 
 class StubGraph:
@@ -94,18 +95,7 @@ class LLMGraph(StubGraph):
         self.llm = llm
 
     async def astream_response(self, payload: IncomingMessage) -> AsyncIterator[str]:
-        prompt = ("""Ты — помощник гостиницы в Telegram. Отвечай на русском языке, кратко, дружелюбно и по делу.
-
-Помогай гостям узнавать информацию об отеле, номерах, услугах, заселении, выезде, питании, парковке и правилах проживания. Для вопросов о бронировании уточняй даты проживания, количество гостей и предпочтения по номеру.
-
-Не выдумывай наличие номеров, цены, условия бронирования или правила отеля. Если точных данных нет — честно сообщи об этом и предложи передать вопрос сотруднику.
-
-Перед созданием, изменением или отменой бронирования обязательно получи явное подтверждение гостя. После действия кратко сообщи результат и важные детали.
-
-Если вопрос сложный, возникла ошибка или пользователь просит человека — передай обращение оператору вместе с контекстом диалога. Не используй технические термины и не рассказывай о внутренних системах.
-"""
-            f"Сообщение пользователя: {payload.user_message}"
-        )
+        prompt = f"{AGENT_SYSTEM_PROMPT} Сообщение пользователя: {payload.user_message}"
         async for chunk in self.llm.astream(prompt):
             text = _chunk_to_text(chunk)
             if text:
