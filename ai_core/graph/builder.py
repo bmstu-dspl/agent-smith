@@ -1,7 +1,17 @@
 import asyncio
 from collections.abc import AsyncIterator
+<<<<<<< HEAD
 
+=======
+from langchain_core.messages import AIMessage
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
+from langgraph.graph import END, START, StateGraph
+from ai_core.graph.nodes import AgentNode, input_guard, route_after_input_guard
+from ai_core.graph.state import AgentState
+>>>>>>> origin/ai-agent
 from ai_core.contracts.schemas import Button, IncomingMessage
+from ai_core.graph.prompts import AGENT_SYSTEM_PROMPT
 
 
 class StubGraph:
@@ -36,6 +46,112 @@ class StubGraph:
             yield word + " "
 
 
+<<<<<<< HEAD
 def build_graph(checkpointer=None) -> StubGraph:
     # позже: StateGraph(...).compile(checkpointer=checkpointer)
     return StubGraph()
+=======
+def _chunk_to_text(chunk: object) -> str:
+    content = getattr(chunk, "content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if isinstance(item, dict) and item.get("type") == "text":
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
+    return ""
+
+
+def build_llm():
+    provider = os.getenv("LLM_PROVIDER", "google_vertex").strip().lower()
+    model = os.getenv("LLM_MODEL", "gemini-2.5-flash")
+
+    if provider in {"google_vertex", "vertex"}:
+        project = os.getenv("GOOGLE_CLOUD_PROJECT")
+        credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+
+        if not project or not credentials_path:
+            return None
+
+        return ChatGoogleGenerativeAI(
+            model=model,
+            vertexai=True,
+            project=project,
+            location=os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1"),
+            temperature=0.2,
+        )
+
+    if provider == "openai":
+        if not os.getenv("OPENAI_API_KEY"):
+            return None
+
+        return ChatOpenAI(
+            model=model,
+            temperature=0.2,
+        )
+
+    raise ValueError(f"Unsupported LLM_PROVIDER: {provider}")
+
+def build_langgraph(llm, checkpointer=None):
+    workflow = StateGraph(AgentState)
+
+    workflow.add_node("input_guard", input_guard)
+    workflow.add_node("agent", AgentNode(llm))
+    workflow.add_edge(START, "input_guard")
+
+    workflow.add_conditional_edges(
+        "input_guard",
+        route_after_input_guard,
+        {
+            "agent": "agent",
+            "end": END,
+        },
+    )
+
+    workflow.add_edge("agent", END)
+
+    if checkpointer is not None:
+        return workflow.compile(checkpointer=checkpointer)
+
+    return workflow.compile()
+
+
+class AgentGraph(StubGraph):
+    def __init__(self, graph) -> None:
+        self.graph = graph
+
+    async def astream_response(self, payload: IncomingMessage) -> AsyncIterator[str]:
+        result = await self.graph.ainvoke(
+            {
+                "session_id": payload.session_id,
+                "user_message": payload.user_message,
+                "metadata": payload.metadata,
+                "messages": [],
+            },
+            config={"configurable": {"thread_id":payload.session_id}},
+        )
+
+        for message in reversed(result.get("messages", [])):
+            if isinstance(message, AIMessage):
+                text = _chunk_to_text(message)
+                if text:
+                    yield text
+                    return
+
+        yield "Не удалось сформировать ответ. Передаю обращение оператору."
+
+def build_graph(checkpointer=None) -> StubGraph:
+    llm = build_llm()
+    if llm is None:
+        return StubGraph()
+
+    graph = build_langgraph(llm, checkpointer=checkpointer)
+    return AgentGraph(graph)
+>>>>>>> origin/ai-agent
