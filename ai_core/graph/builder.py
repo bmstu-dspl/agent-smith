@@ -1,15 +1,12 @@
 import asyncio
+import os
 from collections.abc import AsyncIterator
-<<<<<<< HEAD
-
-=======
 from langchain_core.messages import AIMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from ai_core.graph.nodes import AgentNode, input_guard, route_after_input_guard
 from ai_core.graph.state import AgentState
->>>>>>> origin/ai-agent
 from ai_core.contracts.schemas import Button, IncomingMessage
 from ai_core.graph.prompts import AGENT_SYSTEM_PROMPT
 
@@ -46,11 +43,6 @@ class StubGraph:
             yield word + " "
 
 
-<<<<<<< HEAD
-def build_graph(checkpointer=None) -> StubGraph:
-    # позже: StateGraph(...).compile(checkpointer=checkpointer)
-    return StubGraph()
-=======
 def _chunk_to_text(chunk: object) -> str:
     content = getattr(chunk, "content", "")
     if isinstance(content, str):
@@ -154,4 +146,3 @@ def build_graph(checkpointer=None) -> StubGraph:
 
     graph = build_langgraph(llm, checkpointer=checkpointer)
     return AgentGraph(graph)
->>>>>>> origin/ai-agent
