@@ -8,7 +8,10 @@ from RAG import (
     ApproveVersionCommand,
     ChunkInput,
     CreateDocumentCommand,
+    GetDocumentQuery,
+    GetVersionChunksQuery,
     InMemoryDocumentStore,
+    ListDocumentsQuery,
     MarkVersionProcessedCommand,
     MemoryModule,
     PublishVersionCommand,
@@ -83,3 +86,18 @@ class MemoryModuleTestCase(TestCase):
         )
         self.assertEqual(version.review_status, "published")
         self.assertEqual(version.published_at, now)
+
+        details = module.get_document(GetDocumentQuery(tenant_id="tenant-1", document_id="doc-1"))
+        self.assertEqual(details.document.published_version_id, "ver-1")
+
+        documents = module.list_documents(ListDocumentsQuery(tenant_id="tenant-1", review_status="published"))
+        self.assertEqual(len(documents), 1)
+
+        chunks = module.get_version_chunks(
+            GetVersionChunksQuery(
+                tenant_id="tenant-1",
+                document_id="doc-1",
+                version_id="ver-1",
+            )
+        )
+        self.assertEqual(len(chunks), 1)

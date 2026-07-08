@@ -1,24 +1,39 @@
-from .memory import InMemoryDocumentStore, MemoryModule
+from .memory import InMemoryDocumentStore, MemoryModule, PostgresDocumentStore
 from .types import (
     AddDocumentVersionCommand,
     ApproveVersionCommand,
+    ChunkDTO,
     ChunkInput,
     CreateDocumentCommand,
+    DocumentDetailsDTO,
     DocumentDTO,
+    DocumentListItemDTO,
     DocumentVersionDTO,
+    GetDocumentQuery,
+    GetVersionChunksQuery,
+    ListDocumentsQuery,
     MarkVersionProcessedCommand,
     PublishVersionCommand,
+    RejectVersionCommand,
 )
 
 __all__ = [
     "AddDocumentVersionCommand",
     "ApproveVersionCommand",
+    "ChunkDTO",
     "ChunkInput",
     "CreateDocumentCommand",
+    "DocumentDetailsDTO",
     "DocumentDTO",
+    "DocumentListItemDTO",
     "DocumentVersionDTO",
+    "GetDocumentQuery",
+    "GetVersionChunksQuery",
     "InMemoryDocumentStore",
+    "ListDocumentsQuery",
     "MarkVersionProcessedCommand",
     "MemoryModule",
+    "PostgresDocumentStore",
     "PublishVersionCommand",
+    "RejectVersionCommand",
 ]

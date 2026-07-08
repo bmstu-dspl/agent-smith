@@ -126,7 +126,7 @@ class PostgresDatabaseIntegrationTestCase(TestCase):
 
     def test_migrations_table_created(self) -> None:
         rows = self._database.fetch_all("SELECT version, name FROM schema_migrations ORDER BY version;")
-        self.assertEqual([row["version"] for row in rows], ["0001", "0002"])
+        self.assertEqual([row["version"] for row in rows], ["0001", "0002", "0003"])
 
     def test_graph_store_roundtrip_and_traversal(self) -> None:
         self._graph.upsert_node(GraphNode(node_id="user-1", node_type="user", properties={"name": "Alice"}))

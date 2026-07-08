@@ -53,6 +53,13 @@ class ApproveVersionCommand:
 
 
 @dataclass(slots=True, frozen=True)
+class RejectVersionCommand:
+    document_id: str
+    version_id: str
+    tenant_id: str
+
+
+@dataclass(slots=True, frozen=True)
 class PublishVersionCommand:
     document_id: str
     version_id: str
@@ -83,3 +90,55 @@ class DocumentVersionDTO:
     processed_at: datetime | None = None
     reviewed_at: datetime | None = None
     published_at: datetime | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class ChunkDTO:
+    chunk_id: str
+    version_id: str
+    tenant_id: str
+    index: int
+    text: str
+    start_byte: int
+    end_byte: int
+    visibility: str
+
+
+@dataclass(slots=True, frozen=True)
+class DocumentDetailsDTO:
+    document: DocumentDTO
+    versions: tuple[DocumentVersionDTO, ...]
+
+
+@dataclass(slots=True, frozen=True)
+class DocumentListItemDTO:
+    document_id: str
+    tenant_id: str
+    title: str
+    visibility: str
+    source_type: str
+    version_count: int
+    published_version_id: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class GetDocumentQuery:
+    tenant_id: str
+    document_id: str
+
+
+@dataclass(slots=True, frozen=True)
+class ListDocumentsQuery:
+    tenant_id: str
+    review_status: str | None = None
+    visibility: str | None = None
+    source_type: str | None = None
+    limit: int = 100
+    offset: int = 0
+
+
+@dataclass(slots=True, frozen=True)
+class GetVersionChunksQuery:
+    tenant_id: str
+    document_id: str
+    version_id: str
