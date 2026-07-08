@@ -1,10 +1,12 @@
 import asyncio
 import os
 from collections.abc import AsyncIterator
-
+from langchain_core.messages import AIMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
-
+from langgraph.graph import END, START, StateGraph
+from ai_core.graph.nodes import AgentNode, input_guard, route_after_input_guard
+from ai_core.graph.state import AgentState
 from ai_core.contracts.schemas import Button, IncomingMessage
 from ai_core.graph.prompts import AGENT_SYSTEM_PROMPT
 
@@ -61,7 +63,7 @@ def _chunk_to_text(chunk: object) -> str:
 
 def build_llm():
     provider = os.getenv("LLM_PROVIDER", "google_vertex").strip().lower()
-    model = os.getenv("LLM_MODEL", "gemini-2.0-flash")
+    model = os.getenv("LLM_MODEL", "gemini-2.5-flash")
 
     if provider in {"google_vertex", "vertex"}:
         project = os.getenv("GOOGLE_CLOUD_PROJECT")
@@ -89,22 +91,58 @@ def build_llm():
 
     raise ValueError(f"Unsupported LLM_PROVIDER: {provider}")
 
+def build_langgraph(llm, checkpointer=None):
+    workflow = StateGraph(AgentState)
 
-class LLMGraph(StubGraph):
-    def __init__(self, llm) -> None:
-        self.llm = llm
+    workflow.add_node("input_guard", input_guard)
+    workflow.add_node("agent", AgentNode(llm))
+    workflow.add_edge(START, "input_guard")
+
+    workflow.add_conditional_edges(
+        "input_guard",
+        route_after_input_guard,
+        {
+            "agent": "agent",
+            "end": END,
+        },
+    )
+
+    workflow.add_edge("agent", END)
+
+    if checkpointer is not None:
+        return workflow.compile(checkpointer=checkpointer)
+
+    return workflow.compile()
+
+
+class AgentGraph(StubGraph):
+    def __init__(self, graph) -> None:
+        self.graph = graph
 
     async def astream_response(self, payload: IncomingMessage) -> AsyncIterator[str]:
-        prompt = f"{AGENT_SYSTEM_PROMPT} Сообщение пользователя: {payload.user_message}"
-        async for chunk in self.llm.astream(prompt):
-            text = _chunk_to_text(chunk)
-            if text:
-                yield text
+        result = await self.graph.ainvoke(
+            {
+                "session_id": payload.session_id,
+                "user_message": payload.user_message,
+                "metadata": payload.metadata,
+                "messages": [],
+            },
+            config={"configurable": {"thread_id":payload.session_id}},
+        )
 
+        for message in reversed(result.get("messages", [])):
+            if isinstance(message, AIMessage):
+                text = _chunk_to_text(message)
+                if text:
+                    yield text
+                    return
+
+        yield "Не удалось сформировать ответ. Передаю обращение оператору."
 
 def build_graph(checkpointer=None) -> StubGraph:
-    # позже: StateGraph(...).compile(checkpointer=checkpointer)
     llm = build_llm()
-    if llm is not None:
-        return LLMGraph(llm=llm)
-    return StubGraph()
+    if llm is None:
+        return StubGraph()
+
+    graph = build_langgraph(llm, checkpointer=checkpointer)
+    return AgentGraph(graph)
