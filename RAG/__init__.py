@@ -1,7 +1,9 @@
 from .memory import InMemoryDocumentStore, MemoryModule, PostgresDocumentStore
 from .types import (
     AddDocumentVersionCommand,
+    AgentContextDTO,
     ApproveVersionCommand,
+    BuildAgentContextQuery,
     ChunkDTO,
     ChunkInput,
     CreateDocumentCommand,
@@ -13,13 +15,17 @@ from .types import (
     GetVersionChunksQuery,
     ListDocumentsQuery,
     MarkVersionProcessedCommand,
+    MemorySearchResultDTO,
     PublishVersionCommand,
     RejectVersionCommand,
+    SearchPublishedMemoryQuery,
 )
 
 __all__ = [
     "AddDocumentVersionCommand",
+    "AgentContextDTO",
     "ApproveVersionCommand",
+    "BuildAgentContextQuery",
     "ChunkDTO",
     "ChunkInput",
     "CreateDocumentCommand",
@@ -32,8 +38,10 @@ __all__ = [
     "InMemoryDocumentStore",
     "ListDocumentsQuery",
     "MarkVersionProcessedCommand",
+    "MemorySearchResultDTO",
     "MemoryModule",
     "PostgresDocumentStore",
     "PublishVersionCommand",
     "RejectVersionCommand",
+    "SearchPublishedMemoryQuery",
 ]

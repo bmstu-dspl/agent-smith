@@ -4,7 +4,10 @@ from .application import MemoryUseCases
 from ._repository import DocumentStore
 from .types import (
     AddDocumentVersionCommand,
+    AgentContextDTO,
     ApproveVersionCommand,
+    BuildAgentContextQuery,
+    ChunkDTO,
     CreateDocumentCommand,
     DocumentDTO,
     DocumentDetailsDTO,
@@ -14,9 +17,10 @@ from .types import (
     GetVersionChunksQuery,
     ListDocumentsQuery,
     MarkVersionProcessedCommand,
+    MemorySearchResultDTO,
     PublishVersionCommand,
     RejectVersionCommand,
-    ChunkDTO,
+    SearchPublishedMemoryQuery,
 )
 
 
@@ -50,3 +54,9 @@ class MemoryModule:
 
     def get_version_chunks(self, query: GetVersionChunksQuery) -> tuple[ChunkDTO, ...]:
         return self._use_cases.get_version_chunks(query)
+
+    def search_published_memory(self, query: SearchPublishedMemoryQuery) -> tuple[MemorySearchResultDTO, ...]:
+        return self._use_cases.search_published_memory(query)
+
+    def build_agent_context(self, query: BuildAgentContextQuery) -> AgentContextDTO:
+        return self._use_cases.build_agent_context(query)

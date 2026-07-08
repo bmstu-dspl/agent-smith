@@ -142,3 +142,43 @@ class GetVersionChunksQuery:
     tenant_id: str
     document_id: str
     version_id: str
+
+
+@dataclass(slots=True, frozen=True)
+class SearchPublishedMemoryQuery:
+    tenant_id: str
+    query: str
+    limit: int = 8
+    source_type: str | None = None
+    visibility: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class MemorySearchResultDTO:
+    chunk_id: str
+    document_id: str
+    version_id: str
+    tenant_id: str
+    title: str
+    text: str
+    score: float
+    chunk_index: int
+    source_type: str
+    trust_level: str
+    visibility: str
+
+
+@dataclass(slots=True, frozen=True)
+class BuildAgentContextQuery:
+    tenant_id: str
+    query: str
+    limit: int = 8
+    source_type: str | None = None
+    visibility: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class AgentContextDTO:
+    query: str
+    context_text: str
+    results: tuple[MemorySearchResultDTO, ...]

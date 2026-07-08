@@ -9,6 +9,7 @@ from typing import Protocol
 from DB import PostgresDatabase
 
 from ._domain import Chunk, Document, DocumentVersion, SourceMetadata
+from .types import MemorySearchResultDTO
 
 
 class DocumentStore(Protocol):
@@ -26,6 +27,18 @@ class DocumentStore(Protocol):
         limit: int = 100,
         offset: int = 0,
     ) -> list[Document]: ...
+
+
+class PublishedMemorySearchStore(Protocol):
+    def search_published(
+        self,
+        tenant_id: str,
+        query: str,
+        *,
+        limit: int = 8,
+        source_type: str | None = None,
+        visibility: str | None = None,
+    ) -> list[MemorySearchResultDTO]: ...
 
 
 class InMemoryDocumentStore:
@@ -72,6 +85,55 @@ class InMemoryDocumentStore:
 
         documents.sort(key=lambda document: document.created_at)
         return deepcopy(documents[offset : offset + limit])
+
+    def search_published(
+        self,
+        tenant_id: str,
+        query: str,
+        *,
+        limit: int = 8,
+        source_type: str | None = None,
+        visibility: str | None = None,
+    ) -> list[MemorySearchResultDTO]:
+        normalized_query = query.strip().lower()
+        if not normalized_query:
+            return []
+
+        results: list[MemorySearchResultDTO] = []
+        for document in self.list(
+            tenant_id,
+            review_status="published",
+            source_type=source_type,
+            visibility=visibility,
+            limit=10_000,
+        ):
+            if document.published_version_id is None:
+                continue
+            version = document.versions.get(document.published_version_id)
+            if version is None or version.review_status != "published":
+                continue
+            for chunk in version.chunks:
+                text = chunk.text.lower()
+                if normalized_query not in text:
+                    continue
+                results.append(
+                    MemorySearchResultDTO(
+                        chunk_id=chunk.chunk_id,
+                        document_id=document.document_id,
+                        version_id=version.version_id,
+                        tenant_id=document.tenant_id,
+                        title=document.title,
+                        text=chunk.text,
+                        score=float(text.count(normalized_query)),
+                        chunk_index=chunk.index,
+                        source_type=document.source_metadata.source_type,
+                        trust_level=version.trust_level,
+                        visibility=chunk.visibility,
+                    )
+                )
+
+        results.sort(key=lambda item: (-item.score, item.document_id, item.chunk_index))
+        return results[:limit]
 
 
 class PostgresDocumentStore:
@@ -271,6 +333,86 @@ class PostgresDocumentStore:
         )
 
         return [self._hydrate_document(row) for row in rows]
+
+    def search_published(
+        self,
+        tenant_id: str,
+        query: str,
+        *,
+        limit: int = 8,
+        source_type: str | None = None,
+        visibility: str | None = None,
+    ) -> list[MemorySearchResultDTO]:
+        normalized_query = query.strip()
+        if not normalized_query:
+            return []
+
+        like_query = f"%{normalized_query}%"
+        filters: list[str] = [
+            "d.tenant_id = %s",
+            "v.review_status = 'published'",
+            "d.published_version_id = v.version_id",
+            "(to_tsvector('simple', c.text) @@ sq.query OR c.text ILIKE %s)",
+        ]
+        parameters: list[object] = [tenant_id.strip(), like_query]
+
+        if source_type is not None:
+            filters.append("d.source_metadata->>'source_type' = %s")
+            parameters.append(source_type.strip().lower())
+        if visibility is not None:
+            filters.append("c.visibility = %s")
+            parameters.append(visibility.strip().lower())
+
+        parameters = [normalized_query, like_query, *parameters, limit]
+        rows = self._database.fetch_all(
+            f"""
+            WITH sq AS (
+                SELECT websearch_to_tsquery('simple', %s) AS query
+            )
+            SELECT
+                c.chunk_id,
+                d.document_id,
+                v.version_id,
+                d.tenant_id,
+                d.title,
+                c.text,
+                c.chunk_index,
+                d.source_metadata->>'source_type' AS source_type,
+                v.trust_level,
+                c.visibility,
+                ts_rank_cd(
+                    to_tsvector('simple', c.text),
+                    sq.query
+                ) + CASE WHEN c.text ILIKE %s THEN 1.0 ELSE 0.0 END AS score
+            FROM rag_chunks AS c
+            JOIN rag_document_versions AS v
+              ON v.tenant_id = c.tenant_id AND v.version_id = c.version_id
+            JOIN rag_documents AS d
+              ON d.tenant_id = v.tenant_id AND d.document_id = v.document_id
+            CROSS JOIN sq
+            WHERE {" AND ".join(filters)}
+            ORDER BY score DESC, d.document_id, c.chunk_index
+            LIMIT %s;
+            """,
+            tuple(parameters),
+        )
+
+        return [
+            MemorySearchResultDTO(
+                chunk_id=str(row["chunk_id"]),
+                document_id=str(row["document_id"]),
+                version_id=str(row["version_id"]),
+                tenant_id=str(row["tenant_id"]),
+                title=str(row["title"]),
+                text=str(row["text"]),
+                score=float(row["score"]),
+                chunk_index=int(row["chunk_index"]),
+                source_type=str(row["source_type"]),
+                trust_level=str(row["trust_level"]),
+                visibility=str(row["visibility"]),
+            )
+            for row in rows
+        ]
 
     def _hydrate_document(self, document_row: dict[str, object]) -> Document:
         tenant_id = str(document_row["tenant_id"])

@@ -12,6 +12,7 @@ from DB import DatabaseConfig, Migrator, PostgresDatabase
 from RAG import (
     AddDocumentVersionCommand,
     ApproveVersionCommand,
+    BuildAgentContextQuery,
     ChunkInput,
     CreateDocumentCommand,
     GetDocumentQuery,
@@ -20,6 +21,7 @@ from RAG import (
     MarkVersionProcessedCommand,
     PostgresDocumentStore,
     PublishVersionCommand,
+    SearchPublishedMemoryQuery,
 )
 from RAG.application import MemoryUseCases
 
@@ -137,6 +139,19 @@ class PostgresDocumentStoreIntegrationTestCase(TestCase):
         )
         self.assertEqual(len(documents), 1)
         self.assertEqual(documents[0].document_id, "doc-1")
+
+        search_results = use_cases.search_published_memory(
+            SearchPublishedMemoryQuery(tenant_id="tenant-1", query="long-term memory")
+        )
+        self.assertEqual(len(search_results), 1)
+        self.assertEqual(search_results[0].chunk_id, "chunk-1")
+        self.assertGreaterEqual(search_results[0].score, 0)
+
+        context = use_cases.build_agent_context(
+            BuildAgentContextQuery(tenant_id="tenant-1", query="long-term memory")
+        )
+        self.assertEqual(len(context.results), 1)
+        self.assertIn("doc-1/ver-1/chunk-1", context.context_text)
 
 
 def _dsn_from_env(env: dict[str, str]) -> str:

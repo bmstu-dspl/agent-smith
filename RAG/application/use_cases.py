@@ -10,9 +10,12 @@ from RAG.application.mappers import (
     to_version_dto,
 )
 from RAG.application.ports import Clock, DocumentStore
+from RAG.application.ports import PublishedMemorySearchStore
 from RAG.types import (
     AddDocumentVersionCommand,
+    AgentContextDTO,
     ApproveVersionCommand,
+    BuildAgentContextQuery,
     ChunkDTO,
     ChunkInput,
     CreateDocumentCommand,
@@ -24,8 +27,10 @@ from RAG.types import (
     GetVersionChunksQuery,
     ListDocumentsQuery,
     MarkVersionProcessedCommand,
+    MemorySearchResultDTO,
     PublishVersionCommand,
     RejectVersionCommand,
+    SearchPublishedMemoryQuery,
 )
 
 
@@ -164,6 +169,43 @@ class GetVersionChunksUseCase:
         document = _load_document(self._store, query.tenant_id, query.document_id)
         version = document.get_version(query.version_id)
         return tuple(to_chunk_dto(chunk) for chunk in version.chunks)
+
+
+class SearchPublishedMemoryUseCase:
+    def __init__(self, search_store: PublishedMemorySearchStore) -> None:
+        self._search_store = search_store
+
+    def execute(self, query: SearchPublishedMemoryQuery) -> tuple[MemorySearchResultDTO, ...]:
+        return tuple(
+            self._search_store.search_published(
+                query.tenant_id,
+                query.query,
+                limit=query.limit,
+                source_type=query.source_type,
+                visibility=query.visibility,
+            )
+        )
+
+
+class BuildAgentContextUseCase:
+    def __init__(self, search_store: PublishedMemorySearchStore) -> None:
+        self._search_store = search_store
+
+    def execute(self, query: BuildAgentContextQuery) -> AgentContextDTO:
+        results = tuple(
+            self._search_store.search_published(
+                query.tenant_id,
+                query.query,
+                limit=query.limit,
+                source_type=query.source_type,
+                visibility=query.visibility,
+            )
+        )
+        context_text = "\n\n".join(
+            f"[{index}] {result.title} ({result.document_id}/{result.version_id}/{result.chunk_id})\n{result.text}"
+            for index, result in enumerate(results, start=1)
+        )
+        return AgentContextDTO(query=query.query, context_text=context_text, results=results)
 
 
 def _load_document(store: DocumentStore, tenant_id: str, document_id: str) -> Document:

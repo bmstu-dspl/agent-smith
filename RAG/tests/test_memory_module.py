@@ -6,6 +6,7 @@ from unittest import TestCase
 from RAG import (
     AddDocumentVersionCommand,
     ApproveVersionCommand,
+    BuildAgentContextQuery,
     ChunkInput,
     CreateDocumentCommand,
     GetDocumentQuery,
@@ -15,6 +16,7 @@ from RAG import (
     MarkVersionProcessedCommand,
     MemoryModule,
     PublishVersionCommand,
+    SearchPublishedMemoryQuery,
 )
 
 
@@ -101,3 +103,11 @@ class MemoryModuleTestCase(TestCase):
             )
         )
         self.assertEqual(len(chunks), 1)
+
+        search_results = module.search_published_memory(
+            SearchPublishedMemoryQuery(tenant_id="tenant-1", query="long-term memory")
+        )
+        self.assertEqual(len(search_results), 1)
+
+        context = module.build_agent_context(BuildAgentContextQuery(tenant_id="tenant-1", query="long-term memory"))
+        self.assertIn("Architecture Notes", context.context_text)

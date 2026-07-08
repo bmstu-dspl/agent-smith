@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from RAG.application.ports import Clock, DocumentStore, utcnow
+from RAG.application.ports import PublishedMemorySearchStore
 from RAG.application.use_cases import (
     AddDocumentVersionUseCase,
     ApproveVersionUseCase,
+    BuildAgentContextUseCase,
     CreateDocumentUseCase,
     GetDocumentUseCase,
     GetVersionChunksUseCase,
@@ -11,10 +13,14 @@ from RAG.application.use_cases import (
     MarkVersionProcessedUseCase,
     PublishVersionUseCase,
     RejectVersionUseCase,
+    SearchPublishedMemoryUseCase,
 )
 from RAG.types import (
     AddDocumentVersionCommand,
+    AgentContextDTO,
     ApproveVersionCommand,
+    BuildAgentContextQuery,
+    ChunkDTO,
     CreateDocumentCommand,
     DocumentDTO,
     DocumentDetailsDTO,
@@ -24,15 +30,23 @@ from RAG.types import (
     GetVersionChunksQuery,
     ListDocumentsQuery,
     MarkVersionProcessedCommand,
+    MemorySearchResultDTO,
     PublishVersionCommand,
     RejectVersionCommand,
-    ChunkDTO,
+    SearchPublishedMemoryQuery,
 )
 
 
 class MemoryUseCases:
-    def __init__(self, store: DocumentStore, *, now_provider: Clock | None = None) -> None:
+    def __init__(
+        self,
+        store: DocumentStore,
+        *,
+        search_store: PublishedMemorySearchStore | None = None,
+        now_provider: Clock | None = None,
+    ) -> None:
         clock = now_provider or utcnow
+        resolved_search_store = search_store or store
         self.create_document_uc = CreateDocumentUseCase(store, clock)
         self.add_document_version_uc = AddDocumentVersionUseCase(store, clock)
         self.mark_version_processed_uc = MarkVersionProcessedUseCase(store, clock)
@@ -42,6 +56,8 @@ class MemoryUseCases:
         self.get_document_uc = GetDocumentUseCase(store)
         self.list_documents_uc = ListDocumentsUseCase(store)
         self.get_version_chunks_uc = GetVersionChunksUseCase(store)
+        self.search_published_memory_uc = SearchPublishedMemoryUseCase(resolved_search_store)
+        self.build_agent_context_uc = BuildAgentContextUseCase(resolved_search_store)
 
     def create_document(self, command: CreateDocumentCommand) -> DocumentDTO:
         return self.create_document_uc.execute(command)
@@ -69,3 +85,9 @@ class MemoryUseCases:
 
     def get_version_chunks(self, query: GetVersionChunksQuery) -> tuple[ChunkDTO, ...]:
         return self.get_version_chunks_uc.execute(query)
+
+    def search_published_memory(self, query: SearchPublishedMemoryQuery) -> tuple[MemorySearchResultDTO, ...]:
+        return self.search_published_memory_uc.execute(query)
+
+    def build_agent_context(self, query: BuildAgentContextQuery) -> AgentContextDTO:
+        return self.build_agent_context_uc.execute(query)
