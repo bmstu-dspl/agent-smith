@@ -32,7 +32,7 @@ class MemoryManager:
 
         self.messages = MessagesStore(self.db)
         self.settings = ProceduralStore(self.db)
-
+        await self.settings.seed_default_callback_labels()
         # 2. Отдельный async-пул для состояния графа
         await self._checkpointer.init(config)
 
