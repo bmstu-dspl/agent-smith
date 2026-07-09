@@ -78,7 +78,7 @@ class MessagesStore:
         return await asyncio.to_thread(self._db.fetch_all, query, (session_id,))
 
     async def deactivate_messages(self, message_ids: list[str]) -> None:
-        """Мягкое исключение сообщений из активного окна без физического удаления —
+        """исключение сообщений из активного окна без физического удаления —
         нужно для guardrails-аудита."""
         if not message_ids:
             return
@@ -87,3 +87,26 @@ class MessagesStore:
             "UPDATE messages SET is_active = FALSE WHERE message_id = ANY(%s);",
             (message_ids,),
         )
+
+    async def find_buttons_context(self, session_id: str, callback_data: str, lookback: int = 20) -> str | None:
+        """
+        Ищет текст кнопки по callback_data среди последних N сообщений ассистента с кнопками.
+        Не ограничивается только самым последним сообщением — пользователь может нажать
+        на кнопку из более раннего сообщения, если Telegram её ещё не убрал.
+        """
+        rows = await asyncio.to_thread(
+            self._db.fetch_all,
+            """
+            SELECT metadata
+            FROM messages
+            WHERE session_id = %s AND role = 'assistant' AND metadata ? 'buttons'
+            ORDER BY created_at DESC
+            LIMIT %s;
+            """,
+            (session_id, lookback),
+        )
+        for row in rows:
+            buttons = row["metadata"].get("buttons", {})
+            if callback_data in buttons:
+                return buttons[callback_data]
+        return None
