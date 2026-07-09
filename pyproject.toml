@@ -8,7 +8,6 @@ dependencies = [
     "aiogram>=3.29.1",
     "httpx>=0.28.1",
     "langchain-core>=1.4.9",
-    "mcp[cli]>=1.28.1",
     "python-dotenv>=1.2.2",
 ]
 

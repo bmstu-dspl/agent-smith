@@ -1,8 +1,6 @@
 import json
-
 import pytest
-
-import mcp_demo_server as booking
+import booking_plugin as booking
 
 
 @pytest.fixture(autouse=True)

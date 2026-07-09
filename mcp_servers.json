@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "booking": {             
-      "command": "python",
-      "args": ["mcp_demo_server.py"],
-      "env": {}
-    }
-  }
-}

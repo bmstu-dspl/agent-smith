@@ -94,3 +94,6 @@ def initialize_plugin() -> None:
     """Проверка обязательных настроек перед стартом плагина."""
     global HOTEL_BOOKING_SITE_URL
     HOTEL_BOOKING_SITE_URL = require_env("HOTEL_BOOKING_SITE_URL")
+
+
+TOOLS = [search_available_rooms, generate_booking_link, get_booking_management_info]
