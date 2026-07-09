@@ -1,6 +1,6 @@
 import json
 
-import os 
+import os
 
 import logging
 from datetime import datetime, timezone
