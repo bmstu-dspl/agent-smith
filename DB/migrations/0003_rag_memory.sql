@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS rag_chunks (
 
 CREATE INDEX IF NOT EXISTS idx_rag_documents_tenant_visibility ON rag_documents (tenant_id, visibility);
 CREATE INDEX IF NOT EXISTS idx_rag_documents_source_type ON rag_documents ((source_metadata->>'source_type'));
+CREATE INDEX IF NOT EXISTS idx_rag_documents_published_version ON rag_documents (tenant_id, published_version_id);
 CREATE INDEX IF NOT EXISTS idx_rag_versions_document ON rag_document_versions (tenant_id, document_id);
 CREATE INDEX IF NOT EXISTS idx_rag_versions_review_status ON rag_document_versions (tenant_id, review_status);
 CREATE INDEX IF NOT EXISTS idx_rag_chunks_version ON rag_chunks (tenant_id, version_id, chunk_index);

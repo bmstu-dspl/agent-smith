@@ -11,9 +11,11 @@ from aiogram.types import WebhookInfo
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 from app.handlers import router
+from app_runtime import AppRuntime
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+runtime: AppRuntime | None = None
 
 WEBHOOK_HOST = "https://sycamore-glaucoma-citadel.ngrok-free.dev"
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
@@ -22,6 +24,12 @@ WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 PORT = 8080
 
 async def on_startup(dispatcher: Dispatcher):
+    global runtime
+
+    runtime = AppRuntime.from_env()
+    dispatcher["runtime"] = runtime
+    dispatcher["memory"] = runtime.memory
+
     webhook_info = await bot.get_webhook_info()
     if webhook_info.url != WEBHOOK_URL:
         await bot.set_webhook(
@@ -34,6 +42,12 @@ async def on_startup(dispatcher: Dispatcher):
         logging.info(f"Webhook already set correctly")
 
 async def on_shutdown(dispatcher: Dispatcher):
+    global runtime
+
+    if runtime is not None:
+        runtime.close()
+        runtime = None
+
     await bot.delete_webhook()
     logging.info("Webhook deleted")
 

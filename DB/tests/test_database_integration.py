@@ -165,12 +165,20 @@ class PostgresDatabaseIntegrationTestCase(TestCase):
 
 
 def _dsn_from_env(env: dict[str, str]) -> str:
+    direct_dsn = os.environ.get("DB_TEST_POSTGRES_DSN")
+    if direct_dsn:
+        return direct_dsn
+
     for key in ("POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_PORT"):
         if not env.get(key):
             raise ValueError(f"missing {key} in .env")
 
     host = os.environ.get("DB_TEST_POSTGRES_HOST") or os.environ.get("POSTGRES_HOST") or "127.0.0.1"
+    port = os.environ.get("DB_TEST_POSTGRES_PORT") or env["POSTGRES_PORT"]
+    user = os.environ.get("DB_TEST_POSTGRES_USER") or env["POSTGRES_USER"]
+    password = os.environ.get("DB_TEST_POSTGRES_PASSWORD") or env["POSTGRES_PASSWORD"]
+    database = os.environ.get("DB_TEST_POSTGRES_DB") or env["POSTGRES_DB"]
     return (
-        f"postgresql://{env['POSTGRES_USER']}:{env['POSTGRES_PASSWORD']}"
-        f"@{host}:{env['POSTGRES_PORT']}/{env['POSTGRES_DB']}"
+        f"postgresql://{user}:{password}"
+        f"@{host}:{port}/{database}"
     )
