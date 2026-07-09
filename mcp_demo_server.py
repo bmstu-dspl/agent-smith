@@ -3,13 +3,11 @@ import random
 from datetime import datetime
 
 from dotenv import load_dotenv
-from mcp.server.fastmcp import FastMCP
+from langchain_core.tools import tool
 
 from errors import BookingUnavailableError, ValidationError, require_env, safe_tool
 
 load_dotenv()
-
-mcp = FastMCP("Demo Booking Server")
 
 # Заполнится в initialize_plugin() перед стартом
 HOTEL_BOOKING_SITE_URL: str | None = None
@@ -34,7 +32,7 @@ def _validate_dates(check_in: str, check_out: str) -> tuple[datetime, datetime]:
     return d_in, d_out
 
 
-@mcp.tool()
+@tool
 @safe_tool
 def search_available_rooms(check_in: str, check_out: str, guests: int) -> str:
     """Найти доступные номера на указанные даты.
@@ -48,17 +46,16 @@ def search_available_rooms(check_in: str, check_out: str, guests: int) -> str:
     if guests <= 0:
         raise ValidationError("Количество гостей должно быть больше нуля")
 
-    # Заглушка
     if random.random() < 0.2:
         raise BookingUnavailableError("На выбранные даты свободных номеров нет")
 
     return [
-        {"room_type": "1270", "offer_id": "439000", "name": "Стандарт двухместный", "price": 8000},
-        {"room_type": "1271", "offer_id": "439001", "name": "Делюкс с видом на море", "price": 12000},
+        {"room_type": "1270", "offer_id": "439000", "name": "Стандарт двухместный", "price": 4500},
+        {"room_type": "1271", "offer_id": "439001", "name": "Делюкс с видом на море", "price": 6800},
     ]
 
 
-@mcp.tool()
+@tool
 @safe_tool
 def generate_booking_link(room_type: str, offer_id: str, check_in: str, check_out: str) -> str:
     """Сформировать ссылку на предзаполненную форму бронирования.
@@ -81,7 +78,7 @@ def generate_booking_link(room_type: str, offer_id: str, check_in: str, check_ou
     )
 
 
-@mcp.tool()
+@tool
 @safe_tool
 def get_booking_management_info() -> str:
     """Объяснить гостю, как самостоятельно изменить или отменить существующую бронь."""
@@ -97,8 +94,3 @@ def initialize_plugin() -> None:
     """Проверка обязательных настроек перед стартом плагина."""
     global HOTEL_BOOKING_SITE_URL
     HOTEL_BOOKING_SITE_URL = require_env("HOTEL_BOOKING_SITE_URL")
-
-
-if __name__ == "__main__":
-    initialize_plugin()
-    mcp.run()

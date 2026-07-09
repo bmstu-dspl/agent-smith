@@ -1,5 +1,7 @@
 import json
+
 import pytest
+
 import mcp_demo_server as booking
 
 
@@ -14,7 +16,9 @@ def test_search_available_rooms_returns_list(monkeypatch):
     monkeypatch.setattr(booking.random, "random", lambda: 0.9)  # гарантированно "есть номера"
 
     result = json.loads(
-        booking.search_available_rooms(check_in="20-07-2026", check_out="23-07-2026", guests=2)
+        booking.search_available_rooms.invoke(
+            {"check_in": "20-07-2026", "check_out": "23-07-2026", "guests": 2}
+        )
     )
     assert result["ok"] is True
     assert isinstance(result["data"], list)
@@ -26,7 +30,9 @@ def test_search_available_rooms_no_availability(monkeypatch):
     monkeypatch.setattr(booking.random, "random", lambda: 0.0)  # гарантированно "мест нет"
 
     result = json.loads(
-        booking.search_available_rooms(check_in="20-07-2026", check_out="23-07-2026", guests=2)
+        booking.search_available_rooms.invoke(
+            {"check_in": "20-07-2026", "check_out": "23-07-2026", "guests": 2}
+        )
     )
     assert result["ok"] is False
     assert result["error_type"] == "booking_unavailable"
@@ -34,7 +40,9 @@ def test_search_available_rooms_no_availability(monkeypatch):
 
 def test_search_available_rooms_checkout_before_checkin():
     result = json.loads(
-        booking.search_available_rooms(check_in="23-07-2026", check_out="20-07-2026", guests=2)
+        booking.search_available_rooms.invoke(
+            {"check_in": "23-07-2026", "check_out": "20-07-2026", "guests": 2}
+        )
     )
     assert result["ok"] is False
     assert result["error_type"] == "validation_error"
@@ -42,7 +50,9 @@ def test_search_available_rooms_checkout_before_checkin():
 
 def test_search_available_rooms_invalid_guests():
     result = json.loads(
-        booking.search_available_rooms(check_in="20-07-2026", check_out="23-07-2026", guests=0)
+        booking.search_available_rooms.invoke(
+            {"check_in": "20-07-2026", "check_out": "23-07-2026", "guests": 0}
+        )
     )
     assert result["ok"] is False
     assert result["error_type"] == "validation_error"
@@ -50,8 +60,13 @@ def test_search_available_rooms_invalid_guests():
 
 def test_generate_booking_link_success():
     result = json.loads(
-        booking.generate_booking_link(
-            room_type="1270", offer_id="439000", check_in="20-07-2026", check_out="23-07-2026"
+        booking.generate_booking_link.invoke(
+            {
+                "room_type": "1270",
+                "offer_id": "439000",
+                "check_in": "20-07-2026",
+                "check_out": "23-07-2026",
+            }
         )
     )
     assert result["ok"] is True
@@ -65,8 +80,13 @@ def test_generate_booking_link_success():
 
 def test_generate_booking_link_same_day_invalid():
     result = json.loads(
-        booking.generate_booking_link(
-            room_type="1270", offer_id="439000", check_in="20-07-2026", check_out="20-07-2026"
+        booking.generate_booking_link.invoke(
+            {
+                "room_type": "1270",
+                "offer_id": "439000",
+                "check_in": "20-07-2026",
+                "check_out": "20-07-2026",
+            }
         )
     )
     assert result["ok"] is False
@@ -74,7 +94,7 @@ def test_generate_booking_link_same_day_invalid():
 
 
 def test_get_booking_management_info_mentions_access_code():
-    result = json.loads(booking.get_booking_management_info())
+    result = json.loads(booking.get_booking_management_info.invoke({}))
     assert result["ok"] is True
     assert "код доступа" in result["data"]
 
