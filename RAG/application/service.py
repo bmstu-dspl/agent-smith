@@ -9,6 +9,7 @@ from RAG.application.use_cases import (
     CreateDocumentUseCase,
     GetDocumentUseCase,
     GetVersionChunksUseCase,
+    IngestTextDocumentUseCase,
     ListDocumentsUseCase,
     MarkVersionProcessedUseCase,
     PublishVersionUseCase,
@@ -28,6 +29,8 @@ from RAG.types import (
     DocumentVersionDTO,
     GetDocumentQuery,
     GetVersionChunksQuery,
+    IngestTextDocumentCommand,
+    IngestTextDocumentResultDTO,
     ListDocumentsQuery,
     MarkVersionProcessedCommand,
     MemorySearchResultDTO,
@@ -49,6 +52,7 @@ class MemoryUseCases:
         resolved_search_store = search_store or store
         self.create_document_uc = CreateDocumentUseCase(store, clock)
         self.add_document_version_uc = AddDocumentVersionUseCase(store, clock)
+        self.ingest_text_document_uc = IngestTextDocumentUseCase(store, clock)
         self.mark_version_processed_uc = MarkVersionProcessedUseCase(store, clock)
         self.approve_version_uc = ApproveVersionUseCase(store, clock)
         self.reject_version_uc = RejectVersionUseCase(store, clock)
@@ -64,6 +68,9 @@ class MemoryUseCases:
 
     def add_document_version(self, command: AddDocumentVersionCommand) -> DocumentVersionDTO:
         return self.add_document_version_uc.execute(command)
+
+    def ingest_text_document(self, command: IngestTextDocumentCommand) -> IngestTextDocumentResultDTO:
+        return self.ingest_text_document_uc.execute(command)
 
     def mark_version_processed(self, command: MarkVersionProcessedCommand) -> DocumentVersionDTO:
         return self.mark_version_processed_uc.execute(command)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from RAG._domain import Chunk, Document, DocumentVersion, SourceMetadata
 from RAG._errors import DocumentNotFoundError
+from RAG.application.chunking import ChunkingConfig, TextChunker
 from RAG.application.mappers import (
     to_chunk_dto,
     to_document_details_dto,
@@ -25,6 +26,8 @@ from RAG.types import (
     DocumentVersionDTO,
     GetDocumentQuery,
     GetVersionChunksQuery,
+    IngestTextDocumentCommand,
+    IngestTextDocumentResultDTO,
     ListDocumentsQuery,
     MarkVersionProcessedCommand,
     MemorySearchResultDTO,
@@ -96,6 +99,66 @@ class MarkVersionProcessedUseCase:
         version.mark_processed(_to_chunks(command.tenant_id, command.version_id, command.chunks), self._clock())
         self._store.save(document)
         return to_version_dto(version)
+
+
+class IngestTextDocumentUseCase:
+    def __init__(self, store: DocumentStore, clock: Clock) -> None:
+        self._store = store
+        self._clock = clock
+
+    def execute(self, command: IngestTextDocumentCommand) -> IngestTextDocumentResultDTO:
+        now = self._clock()
+        document = self._store.get(command.tenant_id, command.document_id)
+        if document is None:
+            document = Document(
+                document_id=command.document_id,
+                tenant_id=command.tenant_id,
+                title=command.title,
+                source_metadata=SourceMetadata(
+                    source_type=command.source_type,
+                    external_ref=command.external_ref,
+                    original_name=command.original_name,
+                ),
+                visibility=command.visibility,
+                created_at=now,
+                updated_at=now,
+            )
+
+        version = DocumentVersion(
+            version_id=command.version_id,
+            document_id=command.document_id,
+            tenant_id=command.tenant_id,
+            raw_text=command.raw_text,
+            source_metadata=SourceMetadata(
+                source_type=command.source_type,
+                external_ref=command.external_ref,
+                original_name=command.original_name,
+            ),
+            trust_level=command.trust_level,
+            created_at=now,
+            updated_at=now,
+        )
+        chunk_inputs = TextChunker(
+            ChunkingConfig(
+                max_chars=command.max_chunk_chars,
+                overlap_chars=command.chunk_overlap_chars,
+            )
+        ).split(
+            tenant_id=command.tenant_id,
+            document_id=command.document_id,
+            version_id=command.version_id,
+            text=command.raw_text,
+            visibility=command.chunk_visibility,
+        )
+        version.mark_processed(_to_chunks(command.tenant_id, command.version_id, chunk_inputs), now)
+        document.add_version(version, now)
+        self._store.save(document)
+
+        return IngestTextDocumentResultDTO(
+            document=to_document_dto(document),
+            version=to_version_dto(version),
+            chunks=tuple(to_chunk_dto(chunk) for chunk in version.chunks),
+        )
 
 
 class ApproveVersionUseCase:

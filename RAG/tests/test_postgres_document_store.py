@@ -17,6 +17,7 @@ from RAG import (
     CreateDocumentCommand,
     GetDocumentQuery,
     GetVersionChunksQuery,
+    IngestTextDocumentCommand,
     ListDocumentsQuery,
     MarkVersionProcessedCommand,
     PostgresDocumentStore,
@@ -152,6 +153,35 @@ class PostgresDocumentStoreIntegrationTestCase(TestCase):
         )
         self.assertEqual(len(context.results), 1)
         self.assertIn("doc-1/ver-1/chunk-1", context.context_text)
+
+    def test_ingest_text_document_via_postgres(self) -> None:
+        now = datetime(2026, 7, 8, 12, 0, 0, tzinfo=timezone.utc)
+        use_cases = MemoryUseCases(PostgresDocumentStore(self._database), now_provider=lambda: now)
+
+        result = use_cases.ingest_text_document(
+            IngestTextDocumentCommand(
+                document_id="doc-ingest",
+                version_id="ver-ingest",
+                tenant_id="tenant-1",
+                title="Ingested Notes",
+                raw_text="First PostgreSQL memory fact. Second PostgreSQL memory fact. Third PostgreSQL memory fact.",
+                trust_level="trusted",
+                max_chunk_chars=45,
+                chunk_overlap_chars=8,
+            )
+        )
+
+        self.assertEqual(result.version.review_status, "processed")
+        self.assertGreater(len(result.chunks), 1)
+
+        chunks = use_cases.get_version_chunks(
+            GetVersionChunksQuery(
+                tenant_id="tenant-1",
+                document_id="doc-ingest",
+                version_id="ver-ingest",
+            )
+        )
+        self.assertEqual(chunks, result.chunks)
 
 
 def _dsn_from_env(env: dict[str, str]) -> str:

@@ -28,6 +28,23 @@ class AddDocumentVersionCommand:
 
 
 @dataclass(slots=True, frozen=True)
+class IngestTextDocumentCommand:
+    document_id: str
+    version_id: str
+    tenant_id: str
+    title: str
+    raw_text: str
+    source_type: str = "text"
+    visibility: str = "tenant"
+    trust_level: str = "unknown"
+    chunk_visibility: str = "tenant"
+    external_ref: str = ""
+    original_name: str = ""
+    max_chunk_chars: int = 1200
+    chunk_overlap_chars: int = 150
+
+
+@dataclass(slots=True, frozen=True)
 class ChunkInput:
     chunk_id: str
     index: int
@@ -90,6 +107,13 @@ class DocumentVersionDTO:
     processed_at: datetime | None = None
     reviewed_at: datetime | None = None
     published_at: datetime | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class IngestTextDocumentResultDTO:
+    document: DocumentDTO
+    version: DocumentVersionDTO
+    chunks: tuple[ChunkDTO, ...]
 
 
 @dataclass(slots=True, frozen=True)

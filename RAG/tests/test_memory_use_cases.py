@@ -12,6 +12,7 @@ from RAG import (
     GetDocumentQuery,
     GetVersionChunksQuery,
     InMemoryDocumentStore,
+    IngestTextDocumentCommand,
     ListDocumentsQuery,
     MarkVersionProcessedCommand,
     PublishVersionCommand,
@@ -22,6 +23,36 @@ from RAG.application import MemoryUseCases
 
 
 class MemoryUseCasesTestCase(TestCase):
+    def test_ingest_text_document_creates_processed_version_and_chunks(self) -> None:
+        now = datetime(2026, 7, 8, 12, 0, 0, tzinfo=timezone.utc)
+        use_cases = MemoryUseCases(InMemoryDocumentStore(), now_provider=lambda: now)
+
+        result = use_cases.ingest_text_document(
+            IngestTextDocumentCommand(
+                document_id="doc-ingest",
+                version_id="ver-ingest",
+                tenant_id="tenant-1",
+                title="Ingested Notes",
+                raw_text="First memory fact. Second memory fact. Third memory fact.",
+                trust_level="trusted",
+                max_chunk_chars=35,
+                chunk_overlap_chars=5,
+            )
+        )
+
+        self.assertEqual(result.document.document_id, "doc-ingest")
+        self.assertEqual(result.version.review_status, "processed")
+        self.assertGreater(len(result.chunks), 1)
+
+        chunks = use_cases.get_version_chunks(
+            GetVersionChunksQuery(
+                tenant_id="tenant-1",
+                document_id="doc-ingest",
+                version_id="ver-ingest",
+            )
+        )
+        self.assertEqual(chunks, result.chunks)
+
     def test_command_and_query_use_cases(self) -> None:
         now = datetime(2026, 7, 4, 12, 0, 0, tzinfo=timezone.utc)
         use_cases = MemoryUseCases(InMemoryDocumentStore(), now_provider=lambda: now)

@@ -15,6 +15,8 @@ from .types import (
     DocumentVersionDTO,
     GetDocumentQuery,
     GetVersionChunksQuery,
+    IngestTextDocumentCommand,
+    IngestTextDocumentResultDTO,
     ListDocumentsQuery,
     MarkVersionProcessedCommand,
     MemorySearchResultDTO,
@@ -33,6 +35,9 @@ class MemoryModule:
 
     def add_document_version(self, command: AddDocumentVersionCommand) -> DocumentVersionDTO:
         return self._use_cases.add_document_version(command)
+
+    def ingest_text_document(self, command: IngestTextDocumentCommand) -> IngestTextDocumentResultDTO:
+        return self._use_cases.ingest_text_document(command)
 
     def mark_version_processed(self, command: MarkVersionProcessedCommand) -> DocumentVersionDTO:
         return self._use_cases.mark_version_processed(command)
