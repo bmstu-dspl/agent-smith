@@ -7,6 +7,7 @@ from ai_core.contracts.schemas import Button
 class AgentState(TypedDict, total=False):
     session_id: str
     user_message: str
+    message_type: str
     metadata: dict[str, Any]
     messages: Annotated[list[BaseMessage], add_messages]
     intent: str | None

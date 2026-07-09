@@ -1,28 +1,23 @@
 import asyncio
 import os
 from collections.abc import AsyncIterator
-from langchain_core.messages import AIMessage
+
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
-from ai_core.graph.nodes import AgentNode, input_guard, route_after_input_guard
-from ai_core.graph.state import AgentState
+from langgraph.prebuilt import ToolNode, tools_condition
+
 from ai_core.contracts.schemas import Button, IncomingMessage
-from ai_core.graph.prompts import AGENT_SYSTEM_PROMPT
+from ai_core.graph.nodes import AgentNode, input_guard, route_after_input_guard, tool_output_guard
+from ai_core.graph.state import AgentState
+from ai_core.tools import ToolRegistry
+from ai_core.ui import ButtonDecider
 
 
 class StubGraph:
-    """Временная заглушка вместо LangGraph.CompiledGraph.
-    Разделена на два метода вместо одного ainvoke() — под будущий реальный граф:
-    - adecide_buttons: аналог отдельного узла графа, который решает нужны ли кнопки
-      (в реальном LangGraph это будет узел с LLM-вызовом + structured output на Button).
-    - astream_response: аналог graph.astream(..., stream_mode="messages") —
-      токены/чанки ответа от LLM по мере генерации.
-    """
+    """Fallback-граф без LLM и внешних tools для локального запуска без ключей."""
 
     async def adecide_buttons(self, payload: IncomingMessage) -> list[Button]:
-        # Заглушка-логика: если в сообщении упоминается "номер" — предлагаем кнопки,
-        # иначе решаем, что кнопки не нужны. Позже здесь будет LLM с structured output.
         if "номер" in payload.user_message.lower():
             return [
                 Button(text="Забронировать номер", callback_data="book_room"),
@@ -31,15 +26,13 @@ class StubGraph:
         return []
 
     async def astream_response(self, payload: IncomingMessage) -> AsyncIterator[str]:
-        # Заглушка потоковой генерации: режем фиктивный ответ на куски и отдаём
-        # с небольшой задержкой, имитируя стриминг токенов от LLM.
         fake_answer = (
             f"Вы написали: «{payload.user_message}». "
             f"Это потоковый ответ-заглушка, скоро здесь будет настоящий LLM."
         )
         words = fake_answer.split(" ")
         for word in words:
-            await asyncio.sleep(0.05)  # имитация задержки генерации токена
+            await asyncio.sleep(0.05)
             yield word + " "
 
 
@@ -91,11 +84,15 @@ def build_llm():
 
     raise ValueError(f"Unsupported LLM_PROVIDER: {provider}")
 
-def build_langgraph(llm, checkpointer=None):
+
+def build_langgraph(llm, tool_registry: ToolRegistry, checkpointer=None):
+    tools = tool_registry.get_tools()
+    agent_llm = llm.bind_tools(tools) if tools else llm
+
     workflow = StateGraph(AgentState)
 
     workflow.add_node("input_guard", input_guard)
-    workflow.add_node("agent", AgentNode(llm))
+    workflow.add_node("agent", AgentNode(agent_llm))
     workflow.add_edge(START, "input_guard")
 
     workflow.add_conditional_edges(
@@ -107,7 +104,21 @@ def build_langgraph(llm, checkpointer=None):
         },
     )
 
-    workflow.add_edge("agent", END)
+    if tools:
+        workflow.add_node("tools", ToolNode(tools))
+        workflow.add_node("tool_output_guard", tool_output_guard)
+        workflow.add_conditional_edges(
+            "agent",
+            tools_condition,
+            {
+                "tools": "tools",
+                "__end__": END,
+            },
+        )
+        workflow.add_edge("tools", "tool_output_guard")
+        workflow.add_edge("tool_output_guard", "agent")
+    else:
+        workflow.add_edge("agent", END)
 
     if checkpointer is not None:
         return workflow.compile(checkpointer=checkpointer)
@@ -116,33 +127,52 @@ def build_langgraph(llm, checkpointer=None):
 
 
 class AgentGraph(StubGraph):
-    def __init__(self, graph) -> None:
+    def __init__(self, graph, llm, tool_registry: ToolRegistry) -> None:
         self.graph = graph
+        self.tool_registry = tool_registry
+        self.button_decider = ButtonDecider(llm)
+
+    async def adecide_buttons(self, payload: IncomingMessage) -> list[Button]:
+        try:
+            return await self.button_decider.decide(
+                payload=payload,
+                available_actions=self.tool_registry.describe_button_actions(),
+            )
+        except Exception:
+            return []
 
     async def astream_response(self, payload: IncomingMessage) -> AsyncIterator[str]:
-        result = await self.graph.ainvoke(
+        yielded_text = False
+
+        async for chunk, metadata in self.graph.astream(
             {
                 "session_id": payload.session_id,
                 "user_message": payload.user_message,
+                "message_type": payload.message_type,
                 "metadata": payload.metadata,
                 "messages": [],
             },
-            config={"configurable": {"thread_id":payload.session_id}},
-        )
+            config={"configurable": {"thread_id": payload.session_id}},
+            stream_mode="messages",
+        ):
+            node = metadata.get("langgraph_node")
+            if node not in {"agent", "input_guard"}:
+                continue
 
-        for message in reversed(result.get("messages", [])):
-            if isinstance(message, AIMessage):
-                text = _chunk_to_text(message)
-                if text:
-                    yield text
-                    return
+            text = _chunk_to_text(chunk)
+            if text:
+                yielded_text = True
+                yield text
 
-        yield "Не удалось сформировать ответ. Передаю обращение оператору."
+        if not yielded_text:
+            yield "Не удалось сформировать ответ. Передаю обращение оператору."
 
-def build_graph(checkpointer=None) -> StubGraph:
+
+def build_graph(checkpointer=None, tool_registry: ToolRegistry | None = None) -> StubGraph:
     llm = build_llm()
     if llm is None:
         return StubGraph()
 
-    graph = build_langgraph(llm, checkpointer=checkpointer)
-    return AgentGraph(graph)
+    registry = tool_registry or ToolRegistry()
+    graph = build_langgraph(llm, registry, checkpointer=checkpointer)
+    return AgentGraph(graph, llm, registry)
