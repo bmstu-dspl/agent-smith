@@ -85,10 +85,14 @@ class TravelLineClient:
                 response = await client.get(
                     url,
                     headers={"Authorization": f"Bearer {token}"},
-                    params={"checkInDate": check_in, "checkOutDate": check_out, "adults": guests},
+                    params={"arrivalDate": check_in, "departureDate": check_out, "adults": guests},
                 )
             except httpx.RequestError as exc:
                 raise ExternalServiceError(f"Не удалось связаться с TravelLine: {exc}") from exc
+
+
+
+
 
         if response.status_code == 401:
             raise AuthenticationError("Токен TravelLine недействителен")

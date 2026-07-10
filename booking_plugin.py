@@ -1,16 +1,16 @@
-import os
-import random
 from datetime import datetime
 
 from dotenv import load_dotenv
 from langchain_core.tools import tool
 
 from errors import BookingUnavailableError, ValidationError, require_env, safe_tool
+from travelline_client import TravelLineClient, TravelLineConfig
 
 load_dotenv()
 
-# Заполнится в initialize_plugin() перед стартом
+# Заполняются в initialize_plugin() перед стартом
 HOTEL_BOOKING_SITE_URL: str | None = None
+travelline_client: TravelLineClient | None = None
 
 
 def _parse_date(value: str, field_name: str) -> datetime:
@@ -34,7 +34,7 @@ def _validate_dates(check_in: str, check_out: str) -> tuple[datetime, datetime]:
 
 @tool
 @safe_tool
-def search_available_rooms(check_in: str, check_out: str, guests: int) -> str:
+async def search_available_rooms(check_in: str, check_out: str, guests: int) -> list[dict]:
     """Найти доступные номера на указанные даты.
 
     Args:
@@ -42,17 +42,20 @@ def search_available_rooms(check_in: str, check_out: str, guests: int) -> str:
         check_out: дата выезда в формате ДД-ММ-ГГГГ
         guests: количество гостей
     """
-    _validate_dates(check_in, check_out)
+    d_in, d_out = _validate_dates(check_in, check_out)
     if guests <= 0:
         raise ValidationError("Количество гостей должно быть больше нуля")
 
-    if random.random() < 0.2:
+    room_stays = await travelline_client.search_room_stays(
+        d_in.strftime("%Y-%m-%d"), d_out.strftime("%Y-%m-%d"), guests
+    )
+
+    if not room_stays:
         raise BookingUnavailableError("На выбранные даты свободных номеров нет")
 
-    return [
-        {"room_type": "1270", "offer_id": "439000", "name": "Стандарт двухместный", "price": 4500},
-        {"room_type": "1271", "offer_id": "439001", "name": "Делюкс с видом на море", "price": 6800},
-    ]
+    # TODO: свериться с реальной структурой ответа TravelLine и при
+    # необходимости поправить имена полей ниже по коду (room_type/offer_id)
+    return room_stays
 
 
 @tool
@@ -91,9 +94,17 @@ def get_booking_management_info() -> str:
 
 
 def initialize_plugin() -> None:
-    """Проверка обязательных настроек перед стартом плагина."""
-    global HOTEL_BOOKING_SITE_URL
+    """Проверка обязательных настроек и создание клиентов перед стартом плагина."""
+    global HOTEL_BOOKING_SITE_URL, travelline_client
+
     HOTEL_BOOKING_SITE_URL = require_env("HOTEL_BOOKING_SITE_URL")
+
+    travelline_config = TravelLineConfig(
+        client_id=require_env("TRAVELLINE_CLIENT_ID"),
+        client_secret=require_env("TRAVELLINE_CLIENT_SECRET"),
+        property_id=require_env("TRAVELLINE_PROPERTY_ID"),
+    )
+    travelline_client = TravelLineClient(travelline_config)
 
 
 TOOLS = [search_available_rooms, generate_booking_link, get_booking_management_info]

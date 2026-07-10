@@ -63,19 +63,31 @@ def _to_error_dict(exc: Exception) -> dict:
 
 
 def safe_tool(func):
-    """Декоратор: приводит результат ЛЮБОГО инструмента к общему формату:
-    {"ok": true, "data": ...} или {"ok": false, "error_type": ..., ...}
-    """
+    """Декоратор: приводит результат ЛЮБОГО инструмента (синхронного или
+    асинхронного) к единому формату {"ok": true, "data": ...} или
+    {"ok": false, "error_type": ..., ...}."""
+
+    if asyncio.iscoroutinefunction(func):
+
+        @functools.wraps(func)
+        async def async_wrapper(*args, **kwargs):
+            try:
+                result = await func(*args, **kwargs)
+                return json.dumps({"ok": True, "data": result}, ensure_ascii=False)
+            except Exception as exc:
+                return json.dumps(_to_error_dict(exc), ensure_ascii=False)
+
+        return async_wrapper
 
     @functools.wraps(func)
-    def wrapper(*args, **kwargs):
+    def sync_wrapper(*args, **kwargs):
         try:
             result = func(*args, **kwargs)
             return json.dumps({"ok": True, "data": result}, ensure_ascii=False)
         except Exception as exc:
             return json.dumps(_to_error_dict(exc), ensure_ascii=False)
 
-    return wrapper
+    return sync_wrapper
 
 
 def require_env(var_name: str) -> str:
