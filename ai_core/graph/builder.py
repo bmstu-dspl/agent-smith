@@ -158,7 +158,7 @@ class AgentGraph(StubGraph):
         ):
             node = metadata.get("langgraph_node")
 
-            if node in {"agent", "input_guard"}:
+            if node == "agent":
                 text = _chunk_to_text(chunk)
                 if text:
                     yielded_text = True
