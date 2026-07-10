@@ -110,3 +110,19 @@ class MessagesStore:
             if callback_data in buttons:
                 return buttons[callback_data]
         return None
+    
+    async def append_tool_call(
+        self,
+        session_id: str,
+        tool_name: str,
+        tool_args: dict,
+        tool_result: str,
+    ) -> str:
+        """Один вызов инструмента = одна запись, аргументы и результат сразу вместе."""
+        return await self.append_message(
+            session_id,
+            role="tool",
+            content=tool_result,
+            metadata={"tool_name": tool_name, "tool_args": tool_args},
+            is_final=False,
+        )

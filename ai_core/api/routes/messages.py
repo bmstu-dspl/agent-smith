@@ -24,19 +24,18 @@ async def _stream_agent_response(
     buttons_msg = ButtonsMessage(session_id=payload.session_id, buttons=buttons)
     yield buttons_msg.model_dump_json() + "\n"
 
+    async def on_tool_call(name: str, args: dict, result: str) -> None:
+        await memory.messages.append_tool_call(payload.session_id, tool_name=name, tool_args=args, tool_result=result)
+
     accumulated_chunks: list[str] = []
-    async for chunk in graph.astream_response(payload):
+    async for chunk in graph.astream_response(payload, on_tool_call=on_tool_call):
         accumulated_chunks.append(chunk)
         yield json.dumps(make_text_chunk(payload.session_id, chunk), ensure_ascii=False) + "\n"
 
     yield json.dumps(make_stream_end(payload.session_id), ensure_ascii=False) + "\n"
-
     full_response = "".join(accumulated_chunks)
     buttons_metadata = {"buttons": {b.callback_data: b.text for b in buttons}} if buttons else {}
-    await memory.messages.append_message(
-        payload.session_id, "assistant", full_response, metadata=buttons_metadata,
-    )
-
+    await memory.messages.append_message(payload.session_id, "assistant", full_response, metadata=buttons_metadata)
 
 async def _stream_fallback_message(session_id: str, text: str) -> AsyncIterator[str]:
     """Короткий поток без обращения к графу — используется, когда callback_data

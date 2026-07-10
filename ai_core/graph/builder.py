@@ -25,7 +25,7 @@ class StubGraph:
             ]
         return []
 
-    async def astream_response(self, payload: IncomingMessage) -> AsyncIterator[str]:
+    async def astream_response(self, payload: IncomingMessage, on_tool_call=None) -> AsyncIterator[str]:
         fake_answer = (
             f"Вы написали: «{payload.user_message}». "
             f"Это потоковый ответ-заглушка, скоро здесь будет настоящий LLM."
@@ -141,8 +141,9 @@ class AgentGraph(StubGraph):
         except Exception:
             return []
 
-    async def astream_response(self, payload: IncomingMessage) -> AsyncIterator[str]:
+    async def astream_response(self, payload: IncomingMessage, on_tool_call=None) -> AsyncIterator[str]:
         yielded_text = False
+        pending_calls: dict[str, dict] = {}  # tool_call_id -> {"name": ..., "args": ...}
 
         async for chunk, metadata in self.graph.astream(
             {
@@ -156,13 +157,26 @@ class AgentGraph(StubGraph):
             stream_mode="messages",
         ):
             node = metadata.get("langgraph_node")
-            if node not in {"agent", "input_guard"}:
-                continue
 
-            text = _chunk_to_text(chunk)
-            if text:
-                yielded_text = True
-                yield text
+            if node in {"agent", "input_guard"}:
+                text = _chunk_to_text(chunk)
+                if text:
+                    yielded_text = True
+                    yield text
+
+                # AIMessage с tool_calls — запоминаем намерение, ждём результат
+                tool_calls = getattr(chunk, "tool_calls", None)
+                if tool_calls:
+                    for call in tool_calls:
+                        pending_calls[call["id"]] = {"name": call["name"], "args": call.get("args", {})}
+
+            elif node == "tools":
+                # ToolMessage — результат. Как только пришёл — сразу пишем одну запись
+                # с args (из pending_calls) и result вместе.
+                call_id = getattr(chunk, "tool_call_id", None)
+                if call_id in pending_calls and on_tool_call is not None:
+                    info = pending_calls.pop(call_id)
+                    await on_tool_call(info["name"], info["args"], _chunk_to_text(chunk))
 
         if not yielded_text:
             yield "Не удалось сформировать ответ. Передаю обращение оператору."

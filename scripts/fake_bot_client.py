@@ -1,5 +1,6 @@
 """Имитирует поведение будущего бота: шлёт запрос и построчно читает NDJSON-поток.
 Запуск: uv run python scripts/fake_bot_client.py "текст сообщения"
+проверка бд: docker compose exec postgres psql -U postgres -d agent_smith -c "SELECT role, content, metadata,  is_final FROM messages ORDER BY created_at DESC LIMIT 5;"
 """
 import asyncio
 import json
