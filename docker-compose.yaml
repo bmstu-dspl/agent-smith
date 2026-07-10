@@ -31,6 +31,7 @@ services:
       - postgres
     volumes:
       - ./ai_core:/app/ai_core  
+      - ./secrets/agent-smith-501607-810570894f8d.json:/app/gcp/sa-key.json:ro
     command: ["uv", "run", "--no-sync", "uvicorn", "ai_core.main:app", "--reload", "--host", "0.0.0.0", "--port", "8000"]
 
   postgres:
