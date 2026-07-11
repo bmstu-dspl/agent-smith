@@ -2,6 +2,7 @@
 исключения и обертка
 """
 import functools
+import inspect
 import json
 import logging
 import os
@@ -67,7 +68,7 @@ def safe_tool(func):
     асинхронного) к единому формату {"ok": true, "data": ...} или
     {"ok": false, "error_type": ..., ...}."""
 
-    if asyncio.iscoroutinefunction(func):
+    if inspect.iscoroutinefunction(func):
 
         @functools.wraps(func)
         async def async_wrapper(*args, **kwargs):

@@ -68,7 +68,10 @@ class TravelLineClient:
         self._token_expires_at = time.time() + expires_in
         return self._access_token
 
-    async def search_room_stays(self, check_in: str, check_out: str, guests: int) -> list[dict]:
+    async def search_room_stays(
+        self, check_in: str, check_out: str, adults: int, child_ages: list[int] | None = None
+    ) -> list[dict]:
+
         """Найти доступные номера в объекте размещения.
 
         check_in/check_out — в формате ГГГГ-ММ-ДД.
@@ -85,7 +88,12 @@ class TravelLineClient:
                 response = await client.get(
                     url,
                     headers={"Authorization": f"Bearer {token}"},
-                    params={"arrivalDate": check_in, "departureDate": check_out, "adults": guests},
+                    params={
+                        "arrivalDate": check_in,
+                        "departureDate": check_out,
+                        "adults": adults,
+                        "childAges": child_ages or [],
+                    },
                 )
             except httpx.RequestError as exc:
                 raise ExternalServiceError(f"Не удалось связаться с TravelLine: {exc}") from exc
