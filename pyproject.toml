@@ -18,5 +18,5 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["."]
+pythonpath = [".", "booking"]
 asyncio_mode = "auto"

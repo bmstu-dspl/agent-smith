@@ -14,7 +14,7 @@ async def main() -> None:
     booking.initialize_plugin()
 
     result = await booking.search_available_rooms.ainvoke(
-        {"check_in": "10-10-2026", "check_out": "13-10-2026", "adults": 2, "child_ages": [8, 9]}
+        {"check_in": "10-10-2026", "check_out": "13-10-2026", "adults": 3, "child_ages": [2, 9]}
     )
 
     print("Результат поиска (будет для ии):\n")
