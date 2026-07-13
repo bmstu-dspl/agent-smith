@@ -6,9 +6,12 @@ from .types import (
     AddDocumentVersionCommand,
     AgentContextDTO,
     ApproveVersionCommand,
+    ArchiveVersionCommand,
     BuildAgentContextQuery,
     ChunkDTO,
     CreateDocumentCommand,
+    DeleteDocumentCommand,
+    DeleteVersionCommand,
     DocumentDTO,
     DocumentDetailsDTO,
     DocumentListItemDTO,
@@ -47,6 +50,15 @@ class MemoryModule:
 
     def reject_version(self, command: RejectVersionCommand) -> DocumentVersionDTO:
         return self._use_cases.reject_version(command)
+
+    def archive_version(self, command: ArchiveVersionCommand) -> DocumentVersionDTO:
+        return self._use_cases.archive_version(command)
+
+    def delete_version(self, command: DeleteVersionCommand) -> None:
+        self._use_cases.delete_version(command)
+
+    def delete_document(self, command: DeleteDocumentCommand) -> None:
+        self._use_cases.delete_document(command)
 
     def publish_version(self, command: PublishVersionCommand) -> DocumentVersionDTO:
         return self._use_cases.publish_version(command)

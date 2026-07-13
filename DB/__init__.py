@@ -4,11 +4,10 @@ from .database import (
     DatabaseConnectionError,
     DatabaseError,
     DatabaseQueryError,
-    Migration,
     Migrator,
     MigrationError,
     PostgresDatabase,
-    QueryResult,
+    OrmBase,
 )
 from .graph import GraphEdge, GraphNode, GraphStore
 
@@ -21,9 +20,8 @@ __all__ = [
     "GraphEdge",
     "GraphNode",
     "GraphStore",
-    "Migration",
     "Migrator",
     "MigrationError",
     "PostgresDatabase",
-    "QueryResult",
+    "OrmBase",
 ]

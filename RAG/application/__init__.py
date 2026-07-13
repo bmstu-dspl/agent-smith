@@ -2,8 +2,11 @@ from .service import MemoryUseCases
 from .use_cases import (
     AddDocumentVersionUseCase,
     ApproveVersionUseCase,
+    ArchiveVersionUseCase,
     BuildAgentContextUseCase,
     CreateDocumentUseCase,
+    DeleteDocumentUseCase,
+    DeleteVersionUseCase,
     GetDocumentUseCase,
     GetVersionChunksUseCase,
     IngestTextDocumentUseCase,
@@ -17,8 +20,11 @@ from .use_cases import (
 __all__ = [
     "AddDocumentVersionUseCase",
     "ApproveVersionUseCase",
+    "ArchiveVersionUseCase",
     "BuildAgentContextUseCase",
     "CreateDocumentUseCase",
+    "DeleteDocumentUseCase",
+    "DeleteVersionUseCase",
     "GetDocumentUseCase",
     "GetVersionChunksUseCase",
     "IngestTextDocumentUseCase",

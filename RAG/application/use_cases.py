@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from RAG._domain import Chunk, Document, DocumentVersion, SourceMetadata
-from RAG._errors import DocumentNotFoundError
+from RAG._errors import DocumentAlreadyExistsError, DocumentNotFoundError
 from RAG.application.chunking import ChunkingConfig, TextChunker
 from RAG.application.mappers import (
     to_chunk_dto,
@@ -16,10 +16,13 @@ from RAG.types import (
     AddDocumentVersionCommand,
     AgentContextDTO,
     ApproveVersionCommand,
+    ArchiveVersionCommand,
     BuildAgentContextQuery,
     ChunkDTO,
     ChunkInput,
     CreateDocumentCommand,
+    DeleteDocumentCommand,
+    DeleteVersionCommand,
     DocumentDTO,
     DocumentDetailsDTO,
     DocumentListItemDTO,
@@ -43,6 +46,8 @@ class CreateDocumentUseCase:
         self._clock = clock
 
     def execute(self, command: CreateDocumentCommand) -> DocumentDTO:
+        if self._store.get(command.tenant_id, command.document_id) is not None:
+            raise DocumentAlreadyExistsError(f"document {command.document_id!r} already exists")
         now = self._clock()
         document = Document(
             document_id=command.document_id,
@@ -187,6 +192,38 @@ class RejectVersionUseCase:
         return to_version_dto(version)
 
 
+class ArchiveVersionUseCase:
+    def __init__(self, store: DocumentStore, clock: Clock) -> None:
+        self._store = store
+        self._clock = clock
+
+    def execute(self, command: ArchiveVersionCommand) -> DocumentVersionDTO:
+        document = _load_document(self._store, command.tenant_id, command.document_id)
+        version = document.archive_version(command.version_id, self._clock())
+        self._store.save(document)
+        return to_version_dto(version)
+
+
+class DeleteVersionUseCase:
+    def __init__(self, store: DocumentStore, clock: Clock) -> None:
+        self._store = store
+        self._clock = clock
+
+    def execute(self, command: DeleteVersionCommand) -> None:
+        document = _load_document(self._store, command.tenant_id, command.document_id)
+        document.delete_version(command.version_id, self._clock())
+        self._store.save(document)
+
+
+class DeleteDocumentUseCase:
+    def __init__(self, store: DocumentStore) -> None:
+        self._store = store
+
+    def execute(self, command: DeleteDocumentCommand) -> None:
+        if not self._store.delete(command.tenant_id, command.document_id):
+            raise DocumentNotFoundError(f"document {command.document_id!r} was not found")
+
+
 class PublishVersionUseCase:
     def __init__(self, store: DocumentStore, clock: Clock) -> None:
         self._store = store
@@ -264,11 +301,8 @@ class BuildAgentContextUseCase:
                 visibility=query.visibility,
             )
         )
-        context_text = "\n\n".join(
-            f"[{index}] {result.title} ({result.document_id}/{result.version_id}/{result.chunk_id})\n{result.text}"
-            for index, result in enumerate(results, start=1)
-        )
-        return AgentContextDTO(query=query.query, context_text=context_text, results=results)
+        context_text, included_results = _build_bounded_context(results, query.max_context_chars)
+        return AgentContextDTO(query=query.query, context_text=context_text, results=included_results)
 
 
 def _load_document(store: DocumentStore, tenant_id: str, document_id: str) -> Document:
@@ -292,3 +326,26 @@ def _to_chunks(tenant_id: str, version_id: str, chunks: tuple[ChunkInput, ...]) 
         )
         for item in chunks
     ]
+
+
+def _build_bounded_context(
+    results: tuple[MemorySearchResultDTO, ...],
+    max_chars: int,
+) -> tuple[str, tuple[MemorySearchResultDTO, ...]]:
+    entries: list[str] = []
+    included: list[MemorySearchResultDTO] = []
+    used = 0
+    for index, result in enumerate(results, start=1):
+        separator = "\n\n" if entries else ""
+        entry = f"[{index}] {result.title} ({result.document_id}/{result.version_id}/{result.chunk_id})\n{result.text}"
+        remaining = max_chars - used - len(separator)
+        if remaining <= 0:
+            break
+        if len(entry) > remaining:
+            entry = entry[:remaining].rstrip()
+        entries.append(entry)
+        included.append(result)
+        used += len(separator) + len(entry)
+        if len(entry) == remaining:
+            break
+    return "\n\n".join(entries), tuple(included)

@@ -1,5 +1,5 @@
 from ._config import DatabaseConfig
-from ._database import PostgresDatabase, QueryResult
+from ._database import PostgresDatabase
 from ._errors import (
     DatabaseConfigurationError,
     DatabaseConnectionError,
@@ -7,7 +7,8 @@ from ._errors import (
     DatabaseQueryError,
     MigrationError,
 )
-from ._migrations import Migration, Migrator
+from ._migrations import Migrator
+from ._orm import Base as OrmBase
 
 __all__ = [
     "DatabaseConfig",
@@ -15,9 +16,8 @@ __all__ = [
     "DatabaseConnectionError",
     "DatabaseError",
     "DatabaseQueryError",
-    "Migration",
     "Migrator",
     "MigrationError",
     "PostgresDatabase",
-    "QueryResult",
+    "OrmBase",
 ]

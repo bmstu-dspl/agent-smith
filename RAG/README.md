@@ -17,6 +17,8 @@
 
 ```python
 from RAG import (
+    ArchiveVersionCommand,
+    DeleteDocumentCommand,
     IngestTextDocumentCommand,
     MemoryModule,
     PostgresDocumentStore,
@@ -46,6 +48,7 @@ from RAG import (
 3. `publish_version`
 4. `search_published_memory`
 5. `build_agent_context`
+6. `archive_version` или `delete_document`
 
 Статусы версии:
 
@@ -62,7 +65,7 @@ from RAG import (
 ## Быстрый старт с PostgreSQL
 
 ```python
-from DB import DatabaseConfig, Migrator, PostgresDatabase
+from DB import DatabaseConfig, PostgresDatabase
 from RAG import (
     ApproveVersionCommand,
     IngestTextDocumentCommand,
@@ -76,7 +79,7 @@ database = PostgresDatabase(DatabaseConfig.from_env())
 database.open()
 
 try:
-    database.apply_migrations(Migrator().load())
+    database.migrate()
 
     memory = MemoryModule(PostgresDocumentStore(database))
 
@@ -147,6 +150,8 @@ Chunker:
 - генерирует стабильные `chunk_id`
 - сохраняет UTF-8 byte offsets исходного текста
 
+`chunk_overlap_chars` применяется и между semantic chunks, и при разбиении больших фрагментов.
+
 ## Review и публикация
 
 Версия должна быть обработана перед review:
@@ -172,6 +177,9 @@ memory.publish_version(
 
 Поиск работает только по опубликованным версиям.
 
+Опубликованную версию можно архивировать через `ArchiveVersionCommand`. Архивация снимает
+`published_version_id`, после чего версия исчезает из поиска и может быть удалена.
+
 ## Поиск и контекст агента
 
 ```python
@@ -192,6 +200,7 @@ context = memory.build_agent_context(
         tenant_id="tenant-1",
         query="architecture decision",
         limit=8,
+        max_context_chars=12000,
     )
 )
 ```
@@ -202,9 +211,11 @@ context = memory.build_agent_context(
 - готовый `context_text`
 - список найденных `MemorySearchResultDTO`
 
+`max_context_chars` ограничивает размер готового контекста.
+
 ## PostgreSQL schema
 
-Миграции находятся в [../DB/migrations](/mnt/c/Users/geoka_ma3cw4e/project/agent-smith/DB/migrations:1).
+Alembic revisions находятся в [../DB/alembic/versions](/mnt/c/Users/geoka_ma3cw4e/project/agent-smith/DB/alembic/versions:1).
 
 RAG использует таблицы:
 
@@ -232,8 +243,7 @@ docker compose up -d postgres
 
 ## Текущие ограничения
 
-- ORM пока не используется: repository layer работает через общий DB-модуль и raw SQL.
-- SQLAlchemy 2.x + Alembic стоит добавить отдельной задачей для persistence layer.
+- Persistence layer использует SQLAlchemy 2.x ORM и отделён от доменных сущностей mapper-функциями.
+- Документы защищены optimistic locking через `revision`; stale aggregate не перезаписывает новые изменения.
 - Сейчас поддержан ingestion только plain text; PDF/DOCX/HTML extraction должен быть отдельным adapter layer.
 - Vector search пока не реализован; текущий PostgreSQL-поиск использует FTS и fallback на `ILIKE`.
-

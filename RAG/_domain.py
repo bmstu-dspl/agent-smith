@@ -148,6 +148,12 @@ class DocumentVersion:
         self.published_at = now
         self.updated_at = now
 
+    def archive(self, now: datetime) -> None:
+        if self.review_status == "archived":
+            raise ValidationError("version is already archived")
+        self.review_status = "archived"
+        self.updated_at = now
+
 
 @dataclass(slots=True)
 class Document:
@@ -160,6 +166,7 @@ class Document:
     updated_at: datetime
     published_version_id: str | None = None
     versions: dict[str, DocumentVersion] = field(default_factory=dict)
+    revision: int = 0
 
     def __post_init__(self) -> None:
         self.document_id = _normalized_non_empty(self.document_id, "document_id")
@@ -192,3 +199,18 @@ class Document:
         self.published_version_id = version.version_id
         self.updated_at = now
         return version
+
+    def archive_version(self, version_id: str, now: datetime) -> DocumentVersion:
+        version = self.get_version(version_id)
+        version.archive(now)
+        if self.published_version_id == version.version_id:
+            self.published_version_id = None
+        self.updated_at = now
+        return version
+
+    def delete_version(self, version_id: str, now: datetime) -> None:
+        version = self.get_version(version_id)
+        if self.published_version_id == version.version_id:
+            raise ValidationError("published version must be archived before deletion")
+        del self.versions[version.version_id]
+        self.updated_at = now

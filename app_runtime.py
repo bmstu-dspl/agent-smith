@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from DB import DatabaseConfig, Migrator, PostgresDatabase
+from DB import DatabaseConfig, PostgresDatabase
 from RAG import MemoryModule, PostgresDocumentStore
 
 
@@ -15,7 +15,7 @@ class AppRuntime:
     def from_env(cls) -> AppRuntime:
         database = PostgresDatabase(DatabaseConfig.from_env())
         database.open()
-        database.apply_migrations(Migrator().load())
+        database.migrate()
 
         memory = MemoryModule(PostgresDocumentStore(database))
         return cls(database=database, memory=memory)

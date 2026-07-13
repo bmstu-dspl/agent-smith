@@ -6,9 +6,15 @@ from unittest import TestCase
 from RAG import (
     AddDocumentVersionCommand,
     ApproveVersionCommand,
+    ArchiveVersionCommand,
     BuildAgentContextQuery,
     ChunkInput,
+    ConcurrentModificationError,
     CreateDocumentCommand,
+    DeleteDocumentCommand,
+    DeleteVersionCommand,
+    DocumentAlreadyExistsError,
+    DocumentNotFoundError,
     GetDocumentQuery,
     GetVersionChunksQuery,
     InMemoryDocumentStore,
@@ -197,3 +203,85 @@ class MemoryUseCasesTestCase(TestCase):
         )
 
         self.assertEqual(version.review_status, "rejected")
+
+    def test_duplicate_document_is_rejected_without_data_loss(self) -> None:
+        now = datetime(2026, 7, 4, 12, 0, 0, tzinfo=timezone.utc)
+        use_cases = MemoryUseCases(InMemoryDocumentStore(), now_provider=lambda: now)
+        command = CreateDocumentCommand("doc-1", "tenant-1", "Title", "text", "tenant")
+        use_cases.create_document(command)
+        use_cases.add_document_version(
+            AddDocumentVersionCommand("doc-1", "ver-1", "tenant-1", "Text", "text", "trusted")
+        )
+
+        with self.assertRaises(DocumentAlreadyExistsError):
+            use_cases.create_document(command)
+
+        details = use_cases.get_document(GetDocumentQuery("tenant-1", "doc-1"))
+        self.assertEqual(len(details.versions), 1)
+
+    def test_archive_and_delete_lifecycle(self) -> None:
+        now = datetime(2026, 7, 4, 12, 0, 0, tzinfo=timezone.utc)
+        use_cases = MemoryUseCases(InMemoryDocumentStore(), now_provider=lambda: now)
+        self._create_published_document(use_cases)
+
+        archived = use_cases.archive_version(ArchiveVersionCommand("doc-1", "ver-1", "tenant-1"))
+        self.assertEqual(archived.review_status, "archived")
+        self.assertIsNone(use_cases.get_document(GetDocumentQuery("tenant-1", "doc-1")).document.published_version_id)
+
+        use_cases.delete_version(DeleteVersionCommand("doc-1", "ver-1", "tenant-1"))
+        self.assertEqual(use_cases.get_document(GetDocumentQuery("tenant-1", "doc-1")).versions, ())
+        use_cases.delete_document(DeleteDocumentCommand("doc-1", "tenant-1"))
+        with self.assertRaises(DocumentNotFoundError):
+            use_cases.get_document(GetDocumentQuery("tenant-1", "doc-1"))
+
+    def test_query_validation_and_context_budget(self) -> None:
+        with self.assertRaises(ValueError):
+            ListDocumentsQuery(tenant_id="tenant-1", limit=0)
+        with self.assertRaises(ValueError):
+            SearchPublishedMemoryQuery(tenant_id="tenant-1", query=" ")
+
+        now = datetime(2026, 7, 4, 12, 0, 0, tzinfo=timezone.utc)
+        use_cases = MemoryUseCases(InMemoryDocumentStore(), now_provider=lambda: now)
+        self._create_published_document(use_cases)
+        context = use_cases.build_agent_context(
+            BuildAgentContextQuery("tenant-1", "long-term memory", max_context_chars=50)
+        )
+        self.assertLessEqual(len(context.context_text), 50)
+
+    def test_in_memory_store_rejects_stale_aggregate(self) -> None:
+        store = InMemoryDocumentStore()
+        now = datetime(2026, 7, 4, 12, 0, 0, tzinfo=timezone.utc)
+        use_cases = MemoryUseCases(store, now_provider=lambda: now)
+        use_cases.create_document(CreateDocumentCommand("doc-1", "tenant-1", "Title", "text", "tenant"))
+        first = store.get("tenant-1", "doc-1")
+        stale = store.get("tenant-1", "doc-1")
+        assert first is not None and stale is not None
+        first.title = "Changed"
+        store.save(first)
+
+        stale.title = "Lost update"
+        with self.assertRaises(ConcurrentModificationError):
+            store.save(stale)
+
+    def _create_published_document(self, use_cases: MemoryUseCases) -> None:
+        use_cases.create_document(CreateDocumentCommand("doc-1", "tenant-1", "Title", "text", "tenant"))
+        use_cases.add_document_version(
+            AddDocumentVersionCommand(
+                "doc-1",
+                "ver-1",
+                "tenant-1",
+                "Long-term memory text",
+                "text",
+                "trusted",
+            )
+        )
+        use_cases.mark_version_processed(
+            MarkVersionProcessedCommand(
+                "doc-1",
+                "ver-1",
+                "tenant-1",
+                (ChunkInput("chunk-1", 0, "Long-term memory text", 0, 21, "tenant"),),
+            )
+        )
+        use_cases.approve_version(ApproveVersionCommand("doc-1", "ver-1", "tenant-1"))
+        use_cases.publish_version(PublishVersionCommand("doc-1", "ver-1", "tenant-1"))

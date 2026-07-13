@@ -1,31 +1,56 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+from alembic import command
+from alembic.config import Config
+from alembic.runtime.migration import MigrationContext
+from alembic.script import ScriptDirectory
+from sqlalchemy import text
 
 from ._errors import MigrationError
 
-
-@dataclass(slots=True, frozen=True)
-class Migration:
-    version: str
-    name: str
-    sql: str
+if TYPE_CHECKING:
+    from ._database import PostgresDatabase
 
 
 class Migrator:
-    def __init__(self, migrations_path: Path | None = None) -> None:
-        self._migrations_path = migrations_path or Path(__file__).resolve().parent / "migrations"
+    def __init__(self, database: PostgresDatabase | None = None) -> None:
+        self._database = database
+        self._config = _alembic_config()
 
-    def load(self) -> list[Migration]:
-        if not self._migrations_path.exists():
-            return []
+    def upgrade(self, revision: str = "head") -> None:
+        if self._database is None:
+            raise MigrationError("database is required to apply Alembic migrations")
+        try:
+            with self._database.engine.begin() as connection:
+                connection.execute(
+                    text("SELECT pg_advisory_xact_lock(:namespace, :resource)"),
+                    {"namespace": 0x524147, "resource": 0x4D494752},
+                )
+                self._config.attributes["connection"] = connection
+                command.upgrade(self._config, revision)
+        except Exception as error:
+            if isinstance(error, MigrationError):
+                raise
+            raise MigrationError(f"failed to apply Alembic revision {revision}") from error
+        finally:
+            self._config.attributes.pop("connection", None)
 
-        migrations: list[Migration] = []
-        for path in sorted(self._migrations_path.glob("*.sql")):
-            stem = path.stem
-            if "_" not in stem:
-                raise MigrationError(f"invalid migration file name: {path.name}")
-            version, name = stem.split("_", 1)
-            migrations.append(Migration(version=version, name=name, sql=path.read_text(encoding="utf-8")))
-        return migrations
+    def is_current(self) -> bool:
+        if self._database is None:
+            raise MigrationError("database is required to inspect Alembic migrations")
+        scripts = ScriptDirectory.from_config(self._config)
+        with self._database.engine.connect() as connection:
+            current = MigrationContext.configure(connection).get_current_heads()
+        return set(current) == set(scripts.get_heads())
+
+
+def _alembic_config() -> Config:
+    package_path = Path(__file__).resolve().parent
+    config = Config()
+    config.set_main_option("script_location", str(package_path / "alembic"))
+    config.set_main_option("prepend_sys_path", str(package_path.parent))
+    config.set_main_option("path_separator", "os")
+    return config

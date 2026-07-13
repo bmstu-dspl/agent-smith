@@ -7,14 +7,20 @@ from unittest import TestCase
 from uuid import uuid4
 
 from dotenv import dotenv_values
+from sqlalchemy.schema import CreateSchema, DropSchema
 
-from DB import DatabaseConfig, Migrator, PostgresDatabase
+from DB import DatabaseConfig, PostgresDatabase
 from RAG import (
     AddDocumentVersionCommand,
     ApproveVersionCommand,
+    ArchiveVersionCommand,
     BuildAgentContextQuery,
     ChunkInput,
+    ConcurrentModificationError,
     CreateDocumentCommand,
+    DeleteDocumentCommand,
+    DeleteVersionCommand,
+    DocumentAlreadyExistsError,
     GetDocumentQuery,
     GetVersionChunksQuery,
     IngestTextDocumentCommand,
@@ -40,18 +46,20 @@ class PostgresDocumentStoreIntegrationTestCase(TestCase):
         cls._database = PostgresDatabase(
             DatabaseConfig(
                 dsn=_dsn_from_env(env),
-                min_pool_size=1,
-                max_pool_size=4,
+                pool_size=4,
+                max_overflow=0,
                 session_statements=(f"SET search_path TO {cls._schema}, public",),
             )
         )
         cls._database.open()
-        cls._database.execute(f'CREATE SCHEMA "{cls._schema}";')
-        cls._database.apply_migrations(Migrator().load())
+        with cls._database.engine.begin() as connection:
+            connection.execute(CreateSchema(cls._schema))
+        cls._database.migrate()
 
     @classmethod
     def tearDownClass(cls) -> None:
-        cls._database.execute(f'DROP SCHEMA IF EXISTS "{cls._schema}" CASCADE;')
+        with cls._database.engine.begin() as connection:
+            connection.execute(DropSchema(cls._schema, cascade=True, if_exists=True))
         cls._database.close()
 
     def test_memory_use_cases_roundtrip_via_postgres(self) -> None:
@@ -147,6 +155,10 @@ class PostgresDocumentStoreIntegrationTestCase(TestCase):
         self.assertEqual(len(search_results), 1)
         self.assertEqual(search_results[0].chunk_id, "chunk-1")
         self.assertGreaterEqual(search_results[0].score, 0)
+        self.assertEqual(
+            use_cases.search_published_memory(SearchPublishedMemoryQuery(tenant_id="tenant-1", query="%")),
+            (),
+        )
 
         context = use_cases.build_agent_context(
             BuildAgentContextQuery(tenant_id="tenant-1", query="long-term memory")
@@ -182,6 +194,73 @@ class PostgresDocumentStoreIntegrationTestCase(TestCase):
             )
         )
         self.assertEqual(chunks, result.chunks)
+
+    def test_postgres_store_rejects_stale_aggregate(self) -> None:
+        now = datetime(2026, 7, 8, 12, 0, 0, tzinfo=timezone.utc)
+        store = PostgresDocumentStore(self._database)
+        use_cases = MemoryUseCases(store, now_provider=lambda: now)
+        use_cases.create_document(
+            CreateDocumentCommand("doc-concurrent", "tenant-1", "Title", "text", "tenant")
+        )
+        first = store.get("tenant-1", "doc-concurrent")
+        stale = store.get("tenant-1", "doc-concurrent")
+        assert first is not None and stale is not None
+        first.title = "First update"
+        store.save(first)
+
+        stale.title = "Lost update"
+        with self.assertRaises(ConcurrentModificationError):
+            store.save(stale)
+
+        use_cases.delete_document(DeleteDocumentCommand("doc-concurrent", "tenant-1"))
+        self.assertIsNone(store.get("tenant-1", "doc-concurrent"))
+
+    def test_duplicate_create_preserves_existing_document(self) -> None:
+        now = datetime(2026, 7, 8, 12, 0, 0, tzinfo=timezone.utc)
+        use_cases = MemoryUseCases(PostgresDocumentStore(self._database), now_provider=lambda: now)
+        command = CreateDocumentCommand(
+            "doc-duplicate", "tenant-1", "Original title", "text", "tenant"
+        )
+        use_cases.create_document(command)
+        use_cases.add_document_version(
+            AddDocumentVersionCommand(
+                "doc-duplicate", "ver-duplicate", "tenant-1", "Memory", "text", "trusted"
+            )
+        )
+
+        with self.assertRaises(DocumentAlreadyExistsError):
+            use_cases.create_document(command)
+
+        details = use_cases.get_document(GetDocumentQuery("tenant-1", "doc-duplicate"))
+        self.assertEqual(details.document.title, "Original title")
+        self.assertEqual([version.version_id for version in details.versions], ["ver-duplicate"])
+
+    def test_archive_and_delete_lifecycle_via_postgres(self) -> None:
+        now = datetime(2026, 7, 8, 12, 0, 0, tzinfo=timezone.utc)
+        store = PostgresDocumentStore(self._database)
+        use_cases = MemoryUseCases(store, now_provider=lambda: now)
+        use_cases.create_document(
+            CreateDocumentCommand("doc-lifecycle", "tenant-1", "Lifecycle", "text", "tenant")
+        )
+        use_cases.add_document_version(
+            AddDocumentVersionCommand(
+                "doc-lifecycle", "ver-lifecycle", "tenant-1", "Memory", "text", "trusted"
+            )
+        )
+
+        archived = use_cases.archive_version(
+            ArchiveVersionCommand("doc-lifecycle", "ver-lifecycle", "tenant-1")
+        )
+        self.assertEqual(archived.review_status, "archived")
+
+        use_cases.delete_version(
+            DeleteVersionCommand("doc-lifecycle", "ver-lifecycle", "tenant-1")
+        )
+        details = use_cases.get_document(GetDocumentQuery("tenant-1", "doc-lifecycle"))
+        self.assertEqual(details.versions, ())
+
+        use_cases.delete_document(DeleteDocumentCommand("doc-lifecycle", "tenant-1"))
+        self.assertIsNone(store.get("tenant-1", "doc-lifecycle"))
 
 
 def _dsn_from_env(env: dict[str, str]) -> str:

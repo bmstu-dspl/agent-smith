@@ -5,8 +5,11 @@ from RAG.application.ports import PublishedMemorySearchStore
 from RAG.application.use_cases import (
     AddDocumentVersionUseCase,
     ApproveVersionUseCase,
+    ArchiveVersionUseCase,
     BuildAgentContextUseCase,
     CreateDocumentUseCase,
+    DeleteDocumentUseCase,
+    DeleteVersionUseCase,
     GetDocumentUseCase,
     GetVersionChunksUseCase,
     IngestTextDocumentUseCase,
@@ -20,9 +23,12 @@ from RAG.types import (
     AddDocumentVersionCommand,
     AgentContextDTO,
     ApproveVersionCommand,
+    ArchiveVersionCommand,
     BuildAgentContextQuery,
     ChunkDTO,
     CreateDocumentCommand,
+    DeleteDocumentCommand,
+    DeleteVersionCommand,
     DocumentDTO,
     DocumentDetailsDTO,
     DocumentListItemDTO,
@@ -56,6 +62,9 @@ class MemoryUseCases:
         self.mark_version_processed_uc = MarkVersionProcessedUseCase(store, clock)
         self.approve_version_uc = ApproveVersionUseCase(store, clock)
         self.reject_version_uc = RejectVersionUseCase(store, clock)
+        self.archive_version_uc = ArchiveVersionUseCase(store, clock)
+        self.delete_version_uc = DeleteVersionUseCase(store, clock)
+        self.delete_document_uc = DeleteDocumentUseCase(store)
         self.publish_version_uc = PublishVersionUseCase(store, clock)
         self.get_document_uc = GetDocumentUseCase(store)
         self.list_documents_uc = ListDocumentsUseCase(store)
@@ -80,6 +89,15 @@ class MemoryUseCases:
 
     def reject_version(self, command: RejectVersionCommand) -> DocumentVersionDTO:
         return self.reject_version_uc.execute(command)
+
+    def archive_version(self, command: ArchiveVersionCommand) -> DocumentVersionDTO:
+        return self.archive_version_uc.execute(command)
+
+    def delete_version(self, command: DeleteVersionCommand) -> None:
+        self.delete_version_uc.execute(command)
+
+    def delete_document(self, command: DeleteDocumentCommand) -> None:
+        self.delete_document_uc.execute(command)
 
     def publish_version(self, command: PublishVersionCommand) -> DocumentVersionDTO:
         return self.publish_version_uc.execute(command)

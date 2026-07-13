@@ -34,7 +34,9 @@ class TextChunker:
         text: str,
         visibility: str,
     ) -> tuple[ChunkInput, ...]:
-        normalized_text = text.strip()
+        content_start = len(text) - len(text.lstrip())
+        content_end = len(text.rstrip())
+        normalized_text = text[content_start:content_end]
         if not normalized_text:
             return ()
 
@@ -60,8 +62,8 @@ class TextChunker:
                     chunk_id=chunk_id,
                     index=index,
                     text=chunk_text,
-                    start_byte=_byte_offset(normalized_text, adjusted_start),
-                    end_byte=_byte_offset(normalized_text, adjusted_end),
+                    start_byte=_byte_offset(text, content_start + adjusted_start),
+                    end_byte=_byte_offset(text, content_start + adjusted_end),
                     visibility=visibility,
                 )
             )
@@ -74,8 +76,27 @@ class TextChunker:
         current_end: int | None = None
 
         for start, end in spans:
+            if end - start > self.config.max_chars:
+                split_start = start
+                if current_start is not None and current_end is not None:
+                    chunks.append((current_start, current_end))
+                    split_start = max(0, current_end - self.config.overlap_chars)
+                elif chunks and self.config.overlap_chars:
+                    split_start = max(0, chunks[-1][1] - self.config.overlap_chars)
+                chunks.extend(_split_large_span(split_start, end, self.config))
+                current_start = None
+                current_end = None
+                continue
+
             if current_start is None:
-                current_start, current_end = start, end
+                if chunks and self.config.overlap_chars:
+                    current_start = max(
+                        chunks[-1][1] - self.config.overlap_chars,
+                        end - self.config.max_chars,
+                    )
+                else:
+                    current_start = start
+                current_end = end
                 continue
 
             assert current_end is not None
@@ -84,13 +105,11 @@ class TextChunker:
                 continue
 
             chunks.append((current_start, current_end))
-            current_start = max(current_end - self.config.overlap_chars, start)
+            current_start = max(
+                current_end - self.config.overlap_chars,
+                end - self.config.max_chars,
+            )
             current_end = end
-
-            if current_end - current_start > self.config.max_chars:
-                chunks.extend(_split_large_span(current_start, current_end, self.config))
-                current_start = None
-                current_end = None
 
         if current_start is not None and current_end is not None:
             if current_end - current_start > self.config.max_chars:

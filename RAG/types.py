@@ -77,6 +77,26 @@ class RejectVersionCommand:
 
 
 @dataclass(slots=True, frozen=True)
+class ArchiveVersionCommand:
+    document_id: str
+    version_id: str
+    tenant_id: str
+
+
+@dataclass(slots=True, frozen=True)
+class DeleteVersionCommand:
+    document_id: str
+    version_id: str
+    tenant_id: str
+
+
+@dataclass(slots=True, frozen=True)
+class DeleteDocumentCommand:
+    document_id: str
+    tenant_id: str
+
+
+@dataclass(slots=True, frozen=True)
 class PublishVersionCommand:
     document_id: str
     version_id: str
@@ -160,6 +180,9 @@ class ListDocumentsQuery:
     limit: int = 100
     offset: int = 0
 
+    def __post_init__(self) -> None:
+        _validate_page(self.limit, self.offset, max_limit=1000)
+
 
 @dataclass(slots=True, frozen=True)
 class GetVersionChunksQuery:
@@ -175,6 +198,9 @@ class SearchPublishedMemoryQuery:
     limit: int = 8
     source_type: str | None = None
     visibility: str | None = None
+
+    def __post_init__(self) -> None:
+        _validate_search(self.tenant_id, self.query, self.limit)
 
 
 @dataclass(slots=True, frozen=True)
@@ -199,6 +225,12 @@ class BuildAgentContextQuery:
     limit: int = 8
     source_type: str | None = None
     visibility: str | None = None
+    max_context_chars: int = 12_000
+
+    def __post_init__(self) -> None:
+        _validate_search(self.tenant_id, self.query, self.limit)
+        if self.max_context_chars <= 0:
+            raise ValueError("max_context_chars must be positive")
 
 
 @dataclass(slots=True, frozen=True)
@@ -206,3 +238,19 @@ class AgentContextDTO:
     query: str
     context_text: str
     results: tuple[MemorySearchResultDTO, ...]
+
+
+def _validate_search(tenant_id: str, query: str, limit: int) -> None:
+    if not tenant_id.strip():
+        raise ValueError("tenant_id must not be empty")
+    if not query.strip():
+        raise ValueError("query must not be empty")
+    if not 1 <= limit <= 100:
+        raise ValueError("limit must be between 1 and 100")
+
+
+def _validate_page(limit: int, offset: int, *, max_limit: int) -> None:
+    if not 1 <= limit <= max_limit:
+        raise ValueError(f"limit must be between 1 and {max_limit}")
+    if offset < 0:
+        raise ValueError("offset must not be negative")
