@@ -21,6 +21,11 @@ FAKE_ROOM_STAY = {
     "availability": 3,
     "guarantees": [{"paymentMethodCode": "BankCard"}],
     "bookingFormLink": "https://example-hotel.ru/booking?tl-room=386695&tl-offer=899279",
+    "cancellationPolicy": {
+        "freeCancellationPossible": True,
+        "freeCancellationDeadlineLocal": "2026-10-09T13:59",
+        "penaltyAmount": 7290,
+    },
 }
 
 
@@ -133,6 +138,26 @@ async def test_search_available_rooms_no_guarantees(monkeypatch):
     )
     assert result["data"][0]["payment_method"] is None
 
+async def test_search_available_rooms_no_free_cancellation(monkeypatch):
+    room_stay_no_free_cancel = {
+        **FAKE_ROOM_STAY,
+        "cancellationPolicy": {
+            "freeCancellationPossible": False,
+            "penaltyAmount": 15000,
+        },
+    }
+
+    async def fake_search(check_in, check_out, adults, child_ages=None):
+        return [room_stay_no_free_cancel]
+
+    monkeypatch.setattr(booking.travelline_client, "search_room_stays", fake_search)
+
+    result = json.loads(
+        await booking.search_available_rooms.ainvoke(
+            {"check_in": "20-07-2026", "check_out": "23-07-2026", "adults": 2}
+        )
+    )
+    assert result["data"][0]["free_cancellation_until"] is None
 
 async def test_search_available_rooms_no_loyalty_discount(monkeypatch):
     room_stay_no_discount = {**FAKE_ROOM_STAY, "availableDiscounts": []}

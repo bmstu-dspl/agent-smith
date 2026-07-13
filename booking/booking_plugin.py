@@ -32,10 +32,12 @@ def _validate_dates(check_in: str, check_out: str) -> tuple[datetime, datetime]:
 
 
 def _format_room_stay(room_stay: dict) -> dict:
-    """Превращает сырой ответ TravelLine в компактную структуру для LLM."""
+    """Превращает сырой ответ TravelLine в компактную структуру для LLM"""
     price = room_stay["total"]["priceBeforeTax"]
     loyalty_discount = _get_loyalty_discount(room_stay)
     guarantees = room_stay.get("guarantees", [])
+    cancellation_policy = room_stay["cancellationPolicy"]
+    free_cancellation_possible = cancellation_policy.get("freeCancellationPossible", False)
 
     return {
         "room_id": room_stay["roomType"]["id"],
@@ -46,8 +48,12 @@ def _format_room_stay(room_stay: dict) -> dict:
         "price_with_loyalty_discount": (price - loyalty_discount) if loyalty_discount else None,
         "currency": room_stay["currencyCode"],
         "tax_amount": room_stay["total"]["taxAmount"],
-        "free_cancellation_until": room_stay["cancellationPolicy"]["freeCancellationDeadlineLocal"],
-        "penalty_amount": room_stay["cancellationPolicy"]["penaltyAmount"],
+        "free_cancellation_until": (
+            cancellation_policy.get("freeCancellationDeadlineLocal")
+            if free_cancellation_possible
+            else None
+        ),
+        "penalty_amount": cancellation_policy["penaltyAmount"],
         "rooms_left": room_stay["availability"],
         "payment_method": guarantees[0]["paymentMethodCode"] if guarantees else None,
         "booking_link": room_stay["bookingFormLink"],
@@ -79,6 +85,13 @@ async def search_available_rooms(
     rooms_left показывает, сколько номеров осталось — если их мало (1-2),
     можно упомянуть это гостю как повод не откладывать решение.
     payment_method — каким способом нужно будет гарантировать бронь.
+        Официального названия категории номера (например, "Комфорт", "Стандарт")
+    в данных нет — не придумывай и не угадывай его. Описывай варианты через
+    известные характеристики: цену, тип питания (meal_plan), состав гостей
+    (description), доступность (rooms_left). Точное название и фото номера
+    гость увидит сам, перейдя по booking_link.
+    Если free_cancellation_until равен null — бесплатная отмена для этого
+    тарифа недоступна.
 
     Args:
         check_in: дата заезда в формате ДД-ММ-ГГГГ
