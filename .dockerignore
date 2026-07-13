@@ -3,3 +3,9 @@
 .git
 __pycache__
 *.pyc
+.env*
+!.env.example
+secrets
+.pytest_cache
+.mypy_cache
+.ruff_cache

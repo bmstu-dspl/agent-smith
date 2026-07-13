@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
@@ -48,3 +49,23 @@ class AppRuntimeTestCase(TestCase):
         runtime.close()
 
         database.close.assert_called_once_with()
+
+    @patch.dict(os.environ, {"RUN_DB_MIGRATIONS": "false"})
+    @patch("app_runtime.MemoryModule")
+    @patch("app_runtime.PostgresDocumentStore")
+    @patch("app_runtime.PostgresDatabase")
+    @patch("app_runtime.DatabaseConfig")
+    def test_from_env_can_skip_migrations(
+        self,
+        database_config_cls: MagicMock,
+        postgres_database_cls: MagicMock,
+        postgres_store_cls: MagicMock,
+        memory_module_cls: MagicMock,
+    ) -> None:
+        database = MagicMock()
+        postgres_database_cls.return_value = database
+
+        AppRuntime.from_env()
+
+        database.open.assert_called_once_with()
+        database.apply_migrations.assert_not_called()

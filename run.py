@@ -1,29 +1,34 @@
-import asyncio
+from __future__ import annotations
+
 import logging
-import sys
-from pathlib import Path
+import os
 
-sys.path.append(str(Path(__file__).parent))
-
-from config import BOT_TOKEN
 from aiogram import Bot, Dispatcher
-from aiogram.types import WebhookInfo
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler
 from aiohttp import web
+
 from app.handlers import router
 from app_runtime import AppRuntime
+from config import BOT_TOKEN
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 runtime: AppRuntime | None = None
 
-WEBHOOK_HOST = "https://sycamore-glaucoma-citadel.ngrok-free.dev"
+WEBHOOK_HOST = os.environ["WEBHOOK_HOST"].rstrip("/")
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
+PORT = int(os.getenv("PORT", "8080"))
 
-PORT = 8080
 
-async def on_startup(dispatcher: Dispatcher):
+def _env_bool(name: str, *, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+async def on_startup(dispatcher: Dispatcher) -> None:
     global runtime
 
     runtime = AppRuntime.from_env()
@@ -35,48 +40,53 @@ async def on_startup(dispatcher: Dispatcher):
         await bot.set_webhook(
             url=WEBHOOK_URL,
             allowed_updates=dispatcher.resolve_used_update_types(),
-            drop_pending_updates=True
+            drop_pending_updates=_env_bool("DROP_PENDING_UPDATES"),
         )
-        logging.info(f"Webhook set to {WEBHOOK_URL}")
+        logging.info("Telegram webhook configured")
     else:
-        logging.info(f"Webhook already set correctly")
+        logging.info("Telegram webhook already configured")
 
-async def on_shutdown(dispatcher: Dispatcher):
+
+async def on_shutdown(_: Dispatcher) -> None:
     global runtime
 
     if runtime is not None:
         runtime.close()
         runtime = None
+    if _env_bool("DELETE_WEBHOOK_ON_SHUTDOWN"):
+        await bot.delete_webhook()
+        logging.info("Telegram webhook deleted")
+    await bot.session.close()
 
-    await bot.delete_webhook()
-    logging.info("Webhook deleted")
 
-def main():
+async def healthcheck(_: web.Request) -> web.Response:
+    if runtime is None:
+        raise web.HTTPServiceUnavailable(text="starting")
+    try:
+        runtime.database.healthcheck()
+    except Exception:
+        logging.exception("database healthcheck failed")
+        raise web.HTTPServiceUnavailable(text="database unavailable") from None
+    return web.Response(text="ok")
+
+
+def main() -> None:
     logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-
-    app = web.Application()
-
+    application = web.Application()
+    application.router.add_get("/healthz", healthcheck)
     dp.include_router(router)
-    
-    webhook_requests_handler = SimpleRequestHandler(
-        dispatcher=dp,
-        bot=bot,
-    )
-    webhook_requests_handler.register(app, path=WEBHOOK_PATH)
-    
+
+    webhook_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
+    webhook_handler.register(application, path=WEBHOOK_PATH)
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
-    
-    # Запуск сервера
-    logging.info(f"Starting webhook server on port {PORT}")
-    logging.info(f"Webhook URL: {WEBHOOK_URL}")
-    web.run_app(app, host="0.0.0.0", port=PORT)
 
-if __name__ == '__main__':
-    try:
-        main()
-    except KeyboardInterrupt:
-        print('Exit')
+    logging.info("Starting webhook server on port %s", PORT)
+    web.run_app(application, host="0.0.0.0", port=PORT, print=None)
+
+
+if __name__ == "__main__":
+    main()

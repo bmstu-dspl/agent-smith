@@ -1,27 +1,40 @@
-FROM python:3.14-slim
+# syntax=docker/dockerfile:1.7
 
-# копируем uv из официального образа
-COPY --from=ghcr.io/astral-sh/uv:0.11.25 /uv /uvx /bin/
+ARG PYTHON_VERSION=3.14
+ARG UV_VERSION=0.11.25
 
-# рабочая папка внутри контейнера
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
+
+FROM python:${PYTHON_VERSION}-slim AS builder
+COPY --from=uv /uv /usr/local/bin/uv
+
 WORKDIR /app
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_NO_DEV=1 \
+    UV_PYTHON_DOWNLOADS=0
 
-# настройки окружения
-ENV PYTHONUNBUFFERED=1
-ENV UV_NO_DEV=1
-ENV UV_PYTHON_DOWNLOADS=0
-
-# файлы зависимостей
 COPY pyproject.toml uv.lock ./
-# устанавливаем зависимости
-RUN uv sync --frozen --no-install-project
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project
+
 COPY . .
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev
 
-# устанавливаем проект
-RUN uv sync --frozen
+FROM python:${PYTHON_VERSION}-slim AS runtime
 
-# порт для вебхука
-EXPOSE 8080
+RUN groupadd --gid 10001 app \
+    && useradd --uid 10001 --gid app --home-dir /app --no-create-home app
 
-# команда запуска будет переопределена в docker-compose.override.yml
-CMD ["uv", "run", "--no-sync", "python", "run.py"]
+WORKDIR /app
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app
+
+COPY --from=builder --chown=app:app /app /app
+
+USER 10001:10001
+EXPOSE 8080 8000
+CMD ["python", "run.py"]

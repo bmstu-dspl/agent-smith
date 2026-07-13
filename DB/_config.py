@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
+from urllib.parse import quote
 
 from ._errors import DatabaseConfigurationError
 
@@ -45,7 +47,7 @@ class DatabaseConfig:
     @classmethod
     def from_env(cls, prefix: str = "POSTGRES_") -> DatabaseConfig:
         env = os.environ
-        dsn = env.get(f"{prefix}DSN")
+        dsn = _read_value(env, f"{prefix}DSN")
         if dsn:
             return cls(
                 dsn=dsn,
@@ -61,18 +63,23 @@ class DatabaseConfig:
             )
 
         required = ("HOST", "PORT", "DB", "USER", "PASSWORD")
-        missing = [name for name in required if not env.get(f"{prefix}{name}")]
+        values = {name: _read_value(env, f"{prefix}{name}") for name in required}
+        missing = [name for name, value in values.items() if not value]
         if missing:
             raise DatabaseConfigurationError(
                 f"missing database env vars: {', '.join(f'{prefix}{name}' for name in missing)}"
             )
 
-        host = env[f"{prefix}HOST"]
-        port = env[f"{prefix}PORT"]
-        database = env[f"{prefix}DB"]
-        user = env[f"{prefix}USER"]
-        password = env[f"{prefix}PASSWORD"]
-        dsn = f"postgresql://{user}:{password}@{host}:{port}/{database}"
+        host = values["HOST"]
+        port = values["PORT"]
+        database = values["DB"]
+        user = values["USER"]
+        password = values["PASSWORD"]
+        assert host and port and database and user and password
+        dsn = (
+            f"postgresql://{quote(user, safe='')}:{quote(password, safe='')}"
+            f"@{host}:{port}/{quote(database, safe='')}"
+        )
 
         return cls(
             dsn=dsn,
@@ -91,3 +98,20 @@ class DatabaseConfig:
 def _read_session_statements(env: os._Environ[str], prefix: str) -> tuple[str, ...]:
     raw = env.get(f"{prefix}SESSION_STATEMENTS", "")
     return tuple(statement.strip() for statement in raw.split(";") if statement.strip())
+
+
+def _read_value(env: os._Environ[str], key: str) -> str | None:
+    value = env.get(key)
+    if value:
+        return value.strip()
+
+    file_path = env.get(f"{key}_FILE")
+    if not file_path:
+        return None
+    try:
+        secret = Path(file_path).read_text(encoding="utf-8").strip()
+    except OSError as error:
+        raise DatabaseConfigurationError(f"failed to read {key}_FILE") from error
+    if not secret:
+        raise DatabaseConfigurationError(f"{key}_FILE must not be empty")
+    return secret
