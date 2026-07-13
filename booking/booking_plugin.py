@@ -35,6 +35,7 @@ def _format_room_stay(room_stay: dict) -> dict:
     """Превращает сырой ответ TravelLine в компактную структуру для LLM."""
     price = room_stay["total"]["priceBeforeTax"]
     loyalty_discount = _get_loyalty_discount(room_stay)
+    guarantees = room_stay.get("guarantees", [])
 
     return {
         "room_id": room_stay["roomType"]["id"],
@@ -44,8 +45,11 @@ def _format_room_stay(room_stay: dict) -> dict:
         "price": price,
         "price_with_loyalty_discount": (price - loyalty_discount) if loyalty_discount else None,
         "currency": room_stay["currencyCode"],
+        "tax_amount": room_stay["total"]["taxAmount"],
         "free_cancellation_until": room_stay["cancellationPolicy"]["freeCancellationDeadlineLocal"],
         "penalty_amount": room_stay["cancellationPolicy"]["penaltyAmount"],
+        "rooms_left": room_stay["availability"],
+        "payment_method": guarantees[0]["paymentMethodCode"] if guarantees else None,
         "booking_link": room_stay["bookingFormLink"],
     }
 
@@ -69,6 +73,12 @@ async def search_available_rooms(
     Похожие варианты с разной ценой могут отличаться условиями (например,
     штрафом за позднюю отмену — поле penalty_amount) — используй эти цифры,
     чтобы объяснить гостю разницу, если он спросит.
+        Если price_with_loyalty_discount не null — это цена при регистрации
+    в программе лояльности TravelLine на сайте отеля; можешь упомянуть эту
+    возможность гостю.
+    rooms_left показывает, сколько номеров осталось — если их мало (1-2),
+    можно упомянуть это гостю как повод не откладывать решение.
+    payment_method — каким способом нужно будет гарантировать бронь.
 
     Args:
         check_in: дата заезда в формате ДД-ММ-ГГГГ

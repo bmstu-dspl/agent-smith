@@ -4,19 +4,22 @@ import pytest
 
 import booking_plugin as booking
 
+# uv run pytest -v
 
 FAKE_ROOM_STAY = {
     "roomType": {"id": "386695"},
     "ratePlan": {"id": "899279"},
     "fullPlacementsName": "2 взрослых на основных местах.",
     "mealPlanCode": "RoomOnly",
-    "total": {"priceBeforeTax": 20070.0},
+    "total": {"priceBeforeTax": 20070.0, "taxAmount": 0},
     "currencyCode": "RUB",
     "cancellationPolicy": {
         "freeCancellationDeadlineLocal": "2026-10-09T13:59",
         "penaltyAmount": 7290,
     },
     "availableDiscounts": [{"reason": "LoyaltyDiscount", "amount": 603.0}],
+    "availability": 3,
+    "guarantees": [{"paymentMethodCode": "BankCard"}],
     "bookingFormLink": "https://example-hotel.ru/booking?tl-room=386695&tl-offer=899279",
 }
 
@@ -49,6 +52,9 @@ async def test_search_available_rooms_returns_formatted_list(monkeypatch):
     assert room["booking_link"].startswith("https://example-hotel.ru/booking?")
     assert room["penalty_amount"] == 7290
     assert room["price_with_loyalty_discount"] == 20070.0 - 603.0
+    assert room["rooms_left"] == 3
+    assert room["payment_method"] == "BankCard"
+    assert room["tax_amount"] == 0
 
 
 async def test_search_available_rooms_no_availability(monkeypatch):
@@ -110,6 +116,22 @@ def test_initialize_plugin_fails_without_env(monkeypatch):
     monkeypatch.delenv("TRAVELLINE_CLIENT_ID", raising=False)
     with pytest.raises(RuntimeError):
         booking.initialize_plugin()
+
+
+async def test_search_available_rooms_no_guarantees(monkeypatch):
+    room_stay_no_guarantees = {**FAKE_ROOM_STAY, "guarantees": []}
+
+    async def fake_search(check_in, check_out, adults, child_ages=None):
+        return [room_stay_no_guarantees]
+
+    monkeypatch.setattr(booking.travelline_client, "search_room_stays", fake_search)
+
+    result = json.loads(
+        await booking.search_available_rooms.ainvoke(
+            {"check_in": "20-07-2026", "check_out": "23-07-2026", "adults": 2}
+        )
+    )
+    assert result["data"][0]["payment_method"] is None
 
 
 async def test_search_available_rooms_no_loyalty_discount(monkeypatch):
