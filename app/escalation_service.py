@@ -51,12 +51,14 @@ class EscalationService:
         user_id = user_message.from_user.id
         
         if user_id in self.active_escalations:
-            await user_message.answer("Запрос уже передан менеджеру.Ожидайте ответа.")
+            await user_message.answer("Запрос уже передан менеджеру. Ожидайте ответа.")
             return False
         
         manager_id = self.get_available_manager()
+        if manager_id is None:
+            await user_message.answer("Сейчас нет доступных менеджеров. Попробуйте позже.")
+            return False
 
-        
         try:
             user_text = user_message.text or "Нет текста"
             user_name = user_message.from_user.full_name or "Неизвестно"

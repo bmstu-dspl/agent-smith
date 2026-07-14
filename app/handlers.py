@@ -157,13 +157,13 @@ async def handle_callback_query(callback: CallbackQuery, session_id: str = None,
             # или добавляем в metadata информацию о том, что это callback
             payload = {
                 "session_id": session_id or f"temp_{user_id}",
-                "user_message": f"/callback_{callback_data}",  # Специальный маркер для callback
+                "user_message": callback_data,
+                "message_type": "callback",
                 "metadata": {
                     **(user_metadata or {}),
-                    "is_callback": True,
-                    "callback_data": callback_data
+                    "callback_data": callback_data,
                 },
-                "timestamp": datetime.now(timezone.utc).isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat(),
             }
 
             full_text = ""

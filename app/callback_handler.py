@@ -13,8 +13,7 @@ class CallbackHandler:
     
     def __init__(self, bot):
         self.bot = bot
-        self.CALLBACK_URL = "http://ai_agent:8000/callback"
-    
+        self.CALLBACK_URL = "http://ai_agent:8000/agent/process"
     async def handle(self, callback: CallbackQuery) -> Dict[str, Any]:
         """
         Обрабатывает любой callback запрос
@@ -51,9 +50,11 @@ class CallbackHandler:
         """Отправка на сервер"""
         try:
             payload = {
-                "callback_data": callback_data,
-                "user_id": user_id,
-                "timestamp": datetime.now().isoformat()
+                "session_id": f"temp_{user_id}",
+                "user_message": callback_data,
+                "message_type": "callback",
+                "metadata": {"user_id": user_id},
+                "timestamp": datetime.utcnow().isoformat(),
             }
             
             async with httpx.AsyncClient() as client:
