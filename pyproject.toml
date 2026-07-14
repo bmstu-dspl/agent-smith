@@ -20,3 +20,6 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = [".", "booking"]
 asyncio_mode = "auto"
+
+[tool.uv.workspace]
+members = ["booking"]

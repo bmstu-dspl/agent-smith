@@ -1,0 +1,11 @@
+[project]
+name = "booking-plugin"
+version = "0.1.0"
+description = "Плагин бронирования TravelLine для ИИ-агента"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "langchain-core",
+    "httpx",
+    "python-dotenv",
+]
