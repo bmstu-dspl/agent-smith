@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 import httpx
 from aiogram import Router, F
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
 
@@ -127,6 +127,22 @@ async def handle_message(message: Message, session_id: str = None, user_metadata
             await sent_message.edit_text("Произошла непредвиденная ошибка.")
         except Exception:
             pass
+
+
+@router.callback_query(F.data == "book_room")
+async def handle_book_room_callback(callback: CallbackQuery):
+    """
+    Обработчик нажатия на кнопку "Забронировать номер"
+    """
+    await callback.answer()  
+    
+    # Отправляем сообщение пользователю
+    await callback.message.answer("Вы нажали на кнопку забронировать номер")
+
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception as e:
+        logger.warning(f"Не удалось убрать клавиатуру: {e}")
 
 
 @router.message()
