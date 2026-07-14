@@ -87,3 +87,43 @@ class MessagesStore:
             "UPDATE messages SET is_active = FALSE WHERE message_id = ANY(%s);",
             (message_ids,),
         )
+
+    async def find_buttons_context(self, session_id: str, callback_data: str, lookback: int = 20) -> str | None:
+        """
+        Ищет текст кнопки по callback_data среди последних N сообщений ассистента с кнопками.
+        Не ограничивается только самым последним сообщением — пользователь может нажать
+        на кнопку из более раннего сообщения, если Telegram её ещё не убрал.
+        """
+        rows = await asyncio.to_thread(
+            self._db.fetch_all,
+            """
+            SELECT metadata
+            FROM messages
+            WHERE session_id = %s AND role = 'assistant' AND metadata ? 'buttons'
+            ORDER BY created_at DESC
+            LIMIT %s;
+            """,
+            (session_id, lookback),
+        )
+        for row in rows:
+            buttons = row["metadata"].get("buttons", {})
+            if callback_data in buttons:
+                return buttons[callback_data]
+        return None
+    
+    async def append_tool_call(
+        self,
+        session_id: str,
+        tool_name: str,
+        tool_args: dict,
+        tool_result: str,
+    ) -> str:
+        """Один вызов инструмента = одна запись, аргументы и результат сразу вместе."""
+        return await self.append_message(
+            session_id,
+            role="tool",
+            content=tool_result,
+            metadata={"tool_name": tool_name, "tool_args": tool_args},
+            is_final=False,
+        )
+    
