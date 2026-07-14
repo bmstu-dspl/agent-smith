@@ -1,0 +1,49 @@
+services:
+  bot:
+    build: .
+    env_file:
+      - .env
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - AI_AGENT_URL=http://ai_agent:8000
+      - WEBHOOK_HOST=${WEBHOOK_HOST:-https://sycamore-glaucoma-citadel.ngrok-free.dev}
+    depends_on:
+      - ai_agent
+      - postgres
+    command: ["uv", "run", "--no-sync", "python", "run.py"]
+
+  ai_agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.ai_agent
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - WATCHFILES_FORCE_POLLING=true  # Для Windows
+    depends_on:
+      - postgres
+    volumes:
+      - ./ai_core:/app/ai_core
+    command: ["uv", "run", "--no-sync", "uvicorn", "ai_core.main:app", "--reload", "--host", "0.0.0.0", "--port", "8000"]
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+
+volumes:
+  postgres_data:
