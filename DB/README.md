@@ -1,274 +1,131 @@
 # DB
 
-Общий инфраструктурный модуль для работы с `PostgreSQL` в проекте.
+Общий persistence-модуль проекта для PostgreSQL на SQLAlchemy 2.x и Alembic.
 
-Модуль дает:
-- pooled соединения через `psycopg_pool`
-- единый `PostgresDatabase` для query/transaction flow
-- конфиг из env
-- миграции через `schema_migrations`
-- graph storage поверх PostgreSQL
-- typed exceptions для инфраструктурного слоя
+Модуль отвечает за SQLAlchemy engine и пул соединений, транзакционный `Session` boundary, общий declarative base, Alembic-миграции и ORM-хранилище графа.
 
 ## Публичный интерфейс
-
-Использовать нужно только публичные импорты:
 
 ```python
 from DB import (
     DatabaseConfig,
-    DatabaseConnectionError,
-    DatabaseQueryError,
     GraphEdge,
     GraphNode,
     GraphStore,
     Migrator,
+    OrmBase,
     PostgresDatabase,
 )
 ```
 
-Внутренние модули вида `_database.py`, `_graph.py` напрямую не импортируются.
+Модули с префиксом `_` являются внутренними. Прямые SQL helper-функции не экспортируются: прикладные модули работают через ORM и `Session`.
 
-## Переменные окружения
-
-`DatabaseConfig.from_env()` по умолчанию читает переменные с префиксом `POSTGRES_`.
-
-Обязательные:
-
-- `POSTGRES_HOST`
-- `POSTGRES_PORT`
-- `POSTGRES_DB`
-- `POSTGRES_USER`
-- `POSTGRES_PASSWORD`
-
-Опциональные:
-
-- `POSTGRES_DSN`
-- `POSTGRES_MIN_POOL_SIZE`
-- `POSTGRES_MAX_POOL_SIZE`
-- `POSTGRES_CONNECT_TIMEOUT`
-- `POSTGRES_POOL_WAIT_TIMEOUT`
-- `POSTGRES_MAX_IDLE_SECONDS`
-- `POSTGRES_MAX_LIFETIME_SECONDS`
-- `POSTGRES_MAX_WAITING`
-- `POSTGRES_POOL_WORKERS`
-- `POSTGRES_SESSION_STATEMENTS`
-
-Если задан `POSTGRES_DSN`, он используется приоритетно.
-
-Пример:
-
-```env
-POSTGRES_HOST=postgres
-POSTGRES_PORT=5432
-POSTGRES_DB=agent_smith
-POSTGRES_USER=agent_smith
-POSTGRES_PASSWORD=secret
-POSTGRES_MIN_POOL_SIZE=1
-POSTGRES_MAX_POOL_SIZE=10
-POSTGRES_SESSION_STATEMENTS=SET search_path TO public;SET TIME ZONE 'UTC'
-```
-
-## Базовое использование
-
-```python
-from DB import DatabaseConfig, Migrator, PostgresDatabase
-
-config = DatabaseConfig.from_env()
-database = PostgresDatabase(config)
-
-database.open()
-try:
-    database.apply_migrations(Migrator().load())
-
-    health = database.healthcheck()
-    print(health["database_name"], health["schema_name"])
-
-    database.execute(
-        """
-        INSERT INTO app_events (event_id, event_type)
-        VALUES (%s, %s);
-        """,
-        ("evt-1", "document.created"),
-    )
-
-    row = database.fetch_one(
-        "SELECT event_id, event_type FROM app_events WHERE event_id = %s;",
-        ("evt-1",),
-    )
-finally:
-    database.close()
-```
-
-## Lifecycle
-
-Рекомендуемый порядок:
-
-1. Создать `DatabaseConfig`
-2. Создать `PostgresDatabase`
-3. Вызвать `open()`
-4. Применить миграции через `apply_migrations()`
-5. Использовать `execute/fetch/transaction`
-6. На shutdown вызвать `close()`
-
-`initialize(ensure_vector_extension=True)` можно использовать, если нужен только ранний bootstrap пула и `vector` extension.
-
-## Транзакции
+## Подключение
 
 ```python
 from DB import DatabaseConfig, PostgresDatabase
 
 database = PostgresDatabase(DatabaseConfig.from_env())
 database.open()
-
 try:
-    with database.transaction() as connection:
-        connection.execute(
-            "INSERT INTO graph_nodes (node_id, node_type, properties) VALUES (%s, %s, %s::jsonb);",
-            ("node-1", "user", "{}"),
-        )
-        connection.execute(
-            "INSERT INTO graph_nodes (node_id, node_type, properties) VALUES (%s, %s, %s::jsonb);",
-            ("node-2", "project", "{}"),
-        )
+    database.migrate()
+    print(database.healthcheck())
 finally:
     database.close()
 ```
 
-Если внутри транзакции возникает исключение, изменения откатываются, а наружу выбрасывается ошибка.
+`open()` создаёт SQLAlchemy engine с пулом, `pool_pre_ping` и ограничениями из `DatabaseConfig`. `close()` освобождает пул.
+
+## Конфигурация
+
+`DatabaseConfig.from_env()` читает `POSTGRES_DSN` либо собирает DSN из `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER` и `POSTGRES_PASSWORD`.
+
+Настройки пула: `POSTGRES_POOL_SIZE`, `POSTGRES_MAX_OVERFLOW`, `POSTGRES_POOL_TIMEOUT`, `POSTGRES_POOL_RECYCLE`, `POSTGRES_CONNECT_TIMEOUT` и `POSTGRES_SESSION_STATEMENTS`.
+
+## ORM-модель модуля
+
+```python
+from sqlalchemy import Text
+from sqlalchemy.orm import Mapped, mapped_column
+
+from DB import OrmBase
+
+
+class AuditRecordModel(OrmBase):
+    __tablename__ = "audit_records"
+
+    record_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    event_type: Mapped[str] = mapped_column(Text, nullable=False)
+```
+
+ORM-модель остаётся во внутреннем infrastructure-слое своего модуля. Доменная сущность не наследуется от `OrmBase`. Чтобы Alembic видел новую модель при autogenerate, её модуль нужно импортировать в `DB/alembic/env.py`.
+
+## Транзакции
+
+```python
+from sqlalchemy import select
+
+with database.session() as session:
+    session.add(AuditRecordModel(record_id="record-1", event_type="memory.created"))
+
+with database.session() as session:
+    record = session.scalar(
+        select(AuditRecordModel).where(AuditRecordModel.record_id == "record-1")
+    )
+```
+
+Контекст `session()` фиксирует успешную транзакцию, откатывает её при исключении и всегда закрывает Session. SQLAlchemy-ошибки преобразуются в `DatabaseQueryError`.
 
 ## Миграции
 
-Миграции лежат в [migrations](/mnt/c/users/geoka_ma3cw4e/project/agent-smith/DB/migrations:1) и загружаются `Migrator()`.
-
-Формат имени файла:
-
-- `0001_core_extensions.sql`
-- `0002_graph_store.sql`
-
-Требования:
-
-- только `.sql`
-- в имени обязателен шаблон `version_name.sql`
-- версии должны быть упорядочиваемыми лексикографически
-
-Пример запуска:
+Runtime-применение всех revision:
 
 ```python
-from DB import Migrator, PostgresDatabase, DatabaseConfig
-
-database = PostgresDatabase(DatabaseConfig.from_env())
-database.open()
-try:
-    applied = database.apply_migrations(Migrator().load())
-    print(applied)
-finally:
-    database.close()
+database.migrate()
 ```
 
-Информация о применении хранится в таблице `schema_migrations`.
-
-## Graph Store
-
-Graph storage предназначен для модулей, которым нужны сущности и связи поверх PostgreSQL.
-
-Пример:
+Проверка состояния:
 
 ```python
-from DB import DatabaseConfig, GraphEdge, GraphNode, GraphStore, Migrator, PostgresDatabase
+from DB import Migrator
 
-database = PostgresDatabase(DatabaseConfig.from_env())
-database.open()
-
-try:
-    database.apply_migrations(Migrator().load())
-
-    graph = GraphStore(database)
-
-    graph.upsert_node(
-        GraphNode(
-            node_id="user-1",
-            node_type="user",
-            properties={"name": "Alice"},
-        )
-    )
-    graph.upsert_node(
-        GraphNode(
-            node_id="project-1",
-            node_type="project",
-            properties={"name": "Agent Smith"},
-        )
-    )
-    graph.upsert_edge(
-        GraphEdge(
-            edge_id="edge-1",
-            from_node_id="user-1",
-            to_node_id="project-1",
-            edge_type="owns",
-            properties={"role": "owner"},
-        )
-    )
-
-    node = graph.get_node("user-1")
-    neighbors = graph.get_neighbors("user-1")
-    traversal = graph.traverse("user-1", max_depth=3)
-finally:
-    database.close()
+if not Migrator(database).is_current():
+    raise RuntimeError("database schema is outdated")
 ```
 
-Под капотом используются таблицы:
+Создание и применение migration после изменения ORM-моделей:
 
-- `graph_nodes`
-- `graph_edges`
+```bash
+POSTGRES_HOST=127.0.0.1 uv run alembic -c DB/alembic.ini revision --autogenerate -m "add audit records"
+POSTGRES_HOST=127.0.0.1 uv run alembic -c DB/alembic.ini upgrade head
+POSTGRES_HOST=127.0.0.1 uv run alembic -c DB/alembic.ini current --check-heads
+```
 
-Они создаются миграцией `0002_graph_store.sql`.
+Alembic CLI загружает корневой `.env`; при запуске с хоста compose hostname `postgres` нужно переопределить на `127.0.0.1`. Runtime передаёт Alembic уже открытое SQLAlchemy-соединение.
 
-## Исключения
+Каталог `DB/migrations` содержит legacy SQL baseline предыдущей реализации. Runtime его не читает; Alembic baseline безопасно принимает уже созданные таблицы без потери данных.
 
-Основные исключения:
-
-- `DatabaseConfigurationError`
-- `DatabaseConnectionError`
-- `DatabaseQueryError`
-- `MigrationError`
-
-Типичный шаблон:
+## GraphStore
 
 ```python
-from DB import (
-    DatabaseConfig,
-    DatabaseConnectionError,
-    DatabaseQueryError,
-    Migrator,
-    MigrationError,
-    PostgresDatabase,
-)
+from DB import GraphEdge, GraphNode, GraphStore
 
-try:
-    database = PostgresDatabase(DatabaseConfig.from_env())
-    database.open()
-    database.apply_migrations(Migrator().load())
-except DatabaseConnectionError:
-    ...
-except MigrationError:
-    ...
-except DatabaseQueryError:
-    ...
-finally:
-    if "database" in locals():
-        database.close()
+graph = GraphStore(database)
+graph.upsert_node(GraphNode("user-1", "user", {"name": "Alice"}))
+graph.upsert_node(GraphNode("project-1", "project", {"name": "Agent Smith"}))
+graph.upsert_edge(GraphEdge("edge-1", "user-1", "project-1", "owns", {}))
+
+node = graph.get_node("user-1")
+neighbors = graph.get_neighbors("user-1", edge_type="owns")
+path = graph.traverse("user-1", max_depth=3)
 ```
 
-## Что важно
-
-- `PostgresDatabase` должен быть открыт через `open()` до любых query-операций
-- после завершения работы pool нужно закрывать через `close()`
-- миграции нужно применять до первого использования graph schema
-- `GraphStore` не создает схему сам, он работает поверх уже примененных миграций
+Upsert выполняется PostgreSQL `ON CONFLICT` через SQLAlchemy DML, чтение через ORM expressions, обход графа через recursive CTE expression.
 
 ## Проверка
 
-Модуль покрыт:
-
-- unit tests: [DB/tests/test_database.py](/mnt/c/users/geoka_ma3cw4e/project/agent-smith/DB/tests/test_database.py:1)
-- integration tests against docker PostgreSQL: [DB/tests/test_database_integration.py](/mnt/c/users/geoka_ma3cw4e/project/agent-smith/DB/tests/test_database_integration.py:1)
+```bash
+docker compose up -d postgres
+uv run python -m unittest discover -s DB/tests -v
+uv run python -m unittest discover -s RAG/tests -v
+```

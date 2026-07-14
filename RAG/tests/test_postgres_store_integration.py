@@ -8,7 +8,10 @@ from uuid import uuid4
 
 from dotenv import dotenv_values
 
-from DB import DatabaseConfig, Migrator, PostgresDatabase
+from sqlalchemy import select
+from sqlalchemy.schema import CreateSchema, DropSchema
+
+from DB import DatabaseConfig, PostgresDatabase
 from RAG import (
     AddDocumentVersionCommand,
     ApproveVersionCommand,
@@ -19,6 +22,7 @@ from RAG import (
     PostgresDocumentStore,
     PublishVersionCommand,
 )
+from RAG._models import ChunkModel, DocumentModel
 
 
 class PostgresDocumentStoreIntegrationTestCase(TestCase):
@@ -34,18 +38,20 @@ class PostgresDocumentStoreIntegrationTestCase(TestCase):
         cls._database = PostgresDatabase(
             DatabaseConfig(
                 dsn=_dsn_from_env(env),
-                min_pool_size=1,
-                max_pool_size=4,
+                pool_size=4,
+                max_overflow=0,
                 session_statements=(f"SET search_path TO {cls._schema}, public",),
             )
         )
         cls._database.open()
-        cls._database.execute(f'CREATE SCHEMA "{cls._schema}";')
-        cls._database.apply_migrations(Migrator().load())
+        with cls._database.engine.begin() as connection:
+            connection.execute(CreateSchema(cls._schema))
+        cls._database.migrate()
 
     @classmethod
     def tearDownClass(cls) -> None:
-        cls._database.execute(f'DROP SCHEMA IF EXISTS "{cls._schema}" CASCADE;')
+        with cls._database.engine.begin() as connection:
+            connection.execute(DropSchema(cls._schema, cascade=True, if_exists=True))
         cls._database.close()
 
     def test_memory_module_roundtrip_via_postgres(self) -> None:
@@ -123,15 +129,19 @@ class PostgresDocumentStoreIntegrationTestCase(TestCase):
         self.assertEqual(stored_document.versions["ver-1"].review_status, "published")
         self.assertEqual(len(stored_document.versions["ver-1"].chunks), 1)
 
-        document_rows = self._database.fetch_all("SELECT document_id, published_version_id FROM rag_documents ORDER BY document_id;")
-        self.assertEqual(document_rows, [{"document_id": "doc-1", "published_version_id": "ver-1"}])
-
-        chunk_rows = self._database.fetch_all(
-            "SELECT chunk_id, chunk_index, visibility FROM rag_chunks WHERE tenant_id = %s ORDER BY chunk_index;",
-            ("tenant-1",),
-        )
+        with self._database.session() as session:
+            document_rows = session.execute(
+                select(DocumentModel.document_id, DocumentModel.published_version_id)
+                .order_by(DocumentModel.document_id)
+            ).mappings().all()
+            chunk_rows = session.execute(
+                select(ChunkModel.chunk_id, ChunkModel.chunk_index, ChunkModel.visibility)
+                .where(ChunkModel.tenant_id == "tenant-1")
+                .order_by(ChunkModel.chunk_index)
+            ).mappings().all()
+        self.assertEqual([dict(row) for row in document_rows], [{"document_id": "doc-1", "published_version_id": "ver-1"}])
         self.assertEqual(
-            chunk_rows,
+            [dict(row) for row in chunk_rows],
             [{"chunk_id": "chunk-1", "chunk_index": 0, "visibility": "tenant"}],
         )
 

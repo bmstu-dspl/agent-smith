@@ -30,7 +30,7 @@ services:
     depends_on:
       - postgres
     volumes:
-      - ./ai_core:/app/ai_core  
+      - ./ai_core:/app/ai_core
     command: ["uv", "run", "--no-sync", "uvicorn", "ai_core.main:app", "--reload", "--host", "0.0.0.0", "--port", "8000"]
 
   postgres:

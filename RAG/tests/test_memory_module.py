@@ -6,12 +6,17 @@ from unittest import TestCase
 from RAG import (
     AddDocumentVersionCommand,
     ApproveVersionCommand,
+    BuildAgentContextQuery,
     ChunkInput,
     CreateDocumentCommand,
+    GetDocumentQuery,
+    GetVersionChunksQuery,
     InMemoryDocumentStore,
+    ListDocumentsQuery,
     MarkVersionProcessedCommand,
     MemoryModule,
     PublishVersionCommand,
+    SearchPublishedMemoryQuery,
 )
 
 
@@ -83,3 +88,26 @@ class MemoryModuleTestCase(TestCase):
         )
         self.assertEqual(version.review_status, "published")
         self.assertEqual(version.published_at, now)
+
+        details = module.get_document(GetDocumentQuery(tenant_id="tenant-1", document_id="doc-1"))
+        self.assertEqual(details.document.published_version_id, "ver-1")
+
+        documents = module.list_documents(ListDocumentsQuery(tenant_id="tenant-1", review_status="published"))
+        self.assertEqual(len(documents), 1)
+
+        chunks = module.get_version_chunks(
+            GetVersionChunksQuery(
+                tenant_id="tenant-1",
+                document_id="doc-1",
+                version_id="ver-1",
+            )
+        )
+        self.assertEqual(len(chunks), 1)
+
+        search_results = module.search_published_memory(
+            SearchPublishedMemoryQuery(tenant_id="tenant-1", query="long-term memory")
+        )
+        self.assertEqual(len(search_results), 1)
+
+        context = module.build_agent_context(BuildAgentContextQuery(tenant_id="tenant-1", query="long-term memory"))
+        self.assertIn("Architecture Notes", context.context_text)
