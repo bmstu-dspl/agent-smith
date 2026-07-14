@@ -1,3 +1,5 @@
+vertex-ai-service-account.json
 .env
 .venv/
 __pycache__/
+secrets/

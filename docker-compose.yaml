@@ -9,29 +9,61 @@ services:
     environment:
       - AI_AGENT_URL=http://ai_agent:8000
       - WEBHOOK_HOST=${WEBHOOK_HOST:-https://sycamore-glaucoma-citadel.ngrok-free.dev}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_PORT=5432
     depends_on:
-      - ai_agent
-      - postgres
+      ai_agent:
+        condition: service_started
+      postgres:
+        condition: service_healthy
     command: ["uv", "run", "--no-sync", "python", "run.py"]
 
   ai_agent:
     build:
       context: .
       dockerfile: Dockerfile.ai_agent
+    env_file:
+      - .env
     restart: unless-stopped
     ports:
       - "8000:8000"
     env_file:
       - .env
     environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_PORT=5432
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - WATCHFILES_FORCE_POLLING=true  # Для Windows
+      - WATCHFILES_FORCE_POLLING=true
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/secrets/sa-key.json
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     volumes:
       - ./ai_core:/app/ai_core
-    command: ["uv", "run", "--no-sync", "uvicorn", "ai_core.main:app", "--reload", "--host", "0.0.0.0", "--port", "8000"]
+      - ./memory:/app/memory
+      - ./DB:/app/DB
+      - ./secrets:/app/secrets
+    command:
+      [
+        "uv",
+        "run",
+        "--no-sync",
+        "uvicorn",
+        "ai_core.main:app",
+        "--reload",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+      ]
 
   postgres:
     image: pgvector/pgvector:pg16
@@ -44,6 +76,22 @@ services:
       - postgres_data:/var/lib/postgresql/data
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  ngrok:
+    image: ngrok/ngrok:latest
+    restart: unless-stopped
+    ports:
+      - "4040:4040"
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+    command: http bot:8080 --domain=${WEBHOOK_HOST}
+    depends_on:
+      - bot
 
 volumes:
   postgres_data:
