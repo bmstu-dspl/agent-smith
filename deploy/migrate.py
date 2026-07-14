@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from DB import DatabaseConfig, Migrator, PostgresDatabase
+from DB import DatabaseConfig, PostgresDatabase
 
 
 def main() -> None:
@@ -10,8 +10,8 @@ def main() -> None:
     database = PostgresDatabase(DatabaseConfig.from_env())
     try:
         database.open()
-        applied = database.apply_migrations(Migrator().load())
-        logging.info("database migrations complete; applied=%s", applied)
+        database.migrate()
+        logging.info("database migrations complete")
     finally:
         database.close()
 

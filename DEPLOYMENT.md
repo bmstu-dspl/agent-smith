@@ -29,6 +29,14 @@ This topology is suitable for one production node. It is not highly available. F
 
 ## Initial deployment
 
+Clone the application source from GitHub with a read-only deploy key:
+
+```bash
+git clone git@github.com:bmstu-dspl/agent-smith.git
+cd agent-smith
+git switch main
+```
+
 Create configuration and secret files:
 
 ```bash
@@ -54,12 +62,13 @@ Deployment is successful when `postgres`, `ai-agent`, `bot`, and `caddy` are hea
 
 ## Release process
 
-1. Build and test the exact commit in CI.
-2. Tag the application image with an immutable Git SHA, for example `registry.example.com/agent-smith:5011bec`.
-3. Push the image and set `APP_IMAGE` to that immutable tag.
-4. Create a PostgreSQL backup before schema changes.
-5. Run `docker compose pull` and `docker compose up -d`.
-6. Verify migration exit code, healthchecks, webhook delivery, and error rate.
+1. Merge a tested PR into the protected `main` branch.
+2. Create a PostgreSQL backup before schema changes.
+3. On the production host, run `DEPLOY_BRANCH=main ./deploy/update.sh`.
+4. Record the deployed Git SHA printed by the script.
+5. Verify migration exit code, healthchecks, webhook delivery, and error rate.
+
+`update.sh` refuses a dirty worktree or wrong branch, performs only `git pull --ff-only`, builds the application image locally from the checked-out source, labels it with the full Git SHA, and then recreates services. No application image is pulled from a Docker registry. PostgreSQL, Caddy, Python, and uv remain pinned third-party base images and are still obtained from their image registries.
 
 Migrations must follow expand/contract rules: first add backward-compatible schema, then deploy code, then remove obsolete schema in a later release. A failed migration blocks bot and agent startup.
 
@@ -91,7 +100,7 @@ docker compose up -d
 
 ## Rollback
 
-- Code-only failure: set `APP_IMAGE` to the previous immutable tag and run `docker compose up -d`.
+- Code-only failure: check out the previously recorded Git SHA, run `docker compose build` and `docker compose up -d --remove-orphans`.
 - Backward-compatible migration: keep the new schema and roll back only the code.
 - Destructive migration: stop services and restore the pre-deployment backup.
 - Caddy or certificate failure: inspect Caddy logs, DNS, firewall, and ACME rate limits before retrying.
@@ -109,7 +118,8 @@ Docker log rotation prevents unbounded local logs, but production should ship lo
 
 ## Upgrade policy
 
-- Application images use immutable Git SHA tags.
+- Application source is pulled from the protected GitHub `main` branch and built on the production host.
+- Every deployment records the exact Git SHA for rollback and audit.
 - PostgreSQL major upgrades require a separate tested migration plan.
 - pgvector and Caddy use pinned version tags and are upgraded through a normal tested release.
 - Dependency and container vulnerability scanning runs in CI.

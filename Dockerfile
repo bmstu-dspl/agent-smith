@@ -2,6 +2,7 @@
 
 ARG PYTHON_VERSION=3.14
 ARG UV_VERSION=0.11.25
+ARG VCS_REF=unknown
 
 FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
 
@@ -23,6 +24,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev
 
 FROM python:${PYTHON_VERSION}-slim AS runtime
+ARG VCS_REF
 
 RUN groupadd --gid 10001 app \
     && useradd --uid 10001 --gid app --home-dir /app --no-create-home app
@@ -32,6 +34,9 @@ ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app
+
+LABEL org.opencontainers.image.source="https://github.com/bmstu-dspl/agent-smith" \
+      org.opencontainers.image.revision="${VCS_REF}"
 
 COPY --from=builder --chown=app:app /app /app
 

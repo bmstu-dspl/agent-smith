@@ -12,14 +12,16 @@ x-database-environment: &database-environment
   POSTGRES_DB: ${POSTGRES_DB:-agent_smith}
   POSTGRES_USER: ${POSTGRES_USER:-agent_smith}
   POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
-  POSTGRES_MIN_POOL_SIZE: ${POSTGRES_MIN_POOL_SIZE:-1}
-  POSTGRES_MAX_POOL_SIZE: ${POSTGRES_MAX_POOL_SIZE:-10}
+  POSTGRES_POOL_SIZE: ${POSTGRES_POOL_SIZE:-5}
+  POSTGRES_MAX_OVERFLOW: ${POSTGRES_MAX_OVERFLOW:-10}
 
 x-application: &application
-  image: ${APP_IMAGE:-agent-smith:local}
   build:
     context: .
     dockerfile: Dockerfile
+    args:
+      VCS_REF: ${VCS_REF:-unknown}
+  pull_policy: build
   init: true
   read_only: true
   tmpfs:

@@ -7,7 +7,23 @@ from uuid import uuid4
 
 from dotenv import dotenv_values
 
+from sqlalchemy import Integer, String, select
+from sqlalchemy.schema import CreateSchema, DropSchema
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
 from DB import DatabaseConfig, GraphEdge, GraphNode, GraphStore, Migrator, PostgresDatabase
+
+
+class TestBase(DeclarativeBase):
+    pass
+
+
+class IntegrationNoteModel(TestBase):
+    __tablename__ = "integration_notes"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    body: Mapped[str] = mapped_column(String, nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
 class PostgresDatabaseIntegrationTestCase(TestCase):
@@ -23,19 +39,22 @@ class PostgresDatabaseIntegrationTestCase(TestCase):
         cls._database = PostgresDatabase(
             DatabaseConfig(
                 dsn=_dsn_from_env(cls._env),
-                min_pool_size=1,
-                max_pool_size=4,
+                pool_size=4,
+                max_overflow=0,
                 session_statements=(f"SET search_path TO {cls._schema}, public",),
             )
         )
         cls._database.open()
-        cls._database.execute(f'CREATE SCHEMA "{cls._schema}";')
-        cls._database.apply_migrations(Migrator().load())
+        with cls._database.engine.begin() as connection:
+            connection.execute(CreateSchema(cls._schema))
+        cls._database.migrate()
+        IntegrationNoteModel.__table__.create(cls._database.engine)
         cls._graph = GraphStore(cls._database)
 
     @classmethod
     def tearDownClass(cls) -> None:
-        cls._database.execute(f'DROP SCHEMA IF EXISTS "{cls._schema}" CASCADE;')
+        with cls._database.engine.begin() as connection:
+            connection.execute(DropSchema(cls._schema, cascade=True, if_exists=True))
         cls._database.close()
 
     def test_healthcheck(self) -> None:
@@ -43,90 +62,44 @@ class PostgresDatabaseIntegrationTestCase(TestCase):
         self.assertIn("database_name", health)
         self.assertEqual(health["schema_name"], self._schema)
 
-    def test_execute_and_fetch_roundtrip(self) -> None:
-        result = self._database.execute(
-            """
-            CREATE TABLE IF NOT EXISTS integration_notes (
-                id TEXT PRIMARY KEY,
-                body TEXT NOT NULL,
-                embedding vector(3)
-            );
-            """
-        )
-        self.assertGreaterEqual(result.rows_affected, 0)
+    def test_alembic_revision_is_current(self) -> None:
+        self.assertTrue(Migrator(self._database).is_current())
 
-        self._database.execute(
-            """
-            INSERT INTO integration_notes (id, body, embedding)
-            VALUES (%s, %s, '[1,2,3]')
-            ON CONFLICT (id) DO UPDATE SET body = EXCLUDED.body;
-            """,
-            ("note-1", "first note"),
-        )
+    def test_orm_session_roundtrip(self) -> None:
+        with self._database.session() as session:
+            session.add(IntegrationNoteModel(id="note-1", body="first note", priority=3))
 
-        row = self._database.fetch_one(
-            """
-            SELECT id, body, embedding::text AS embedding
-            FROM integration_notes
-            WHERE id = %s;
-            """,
-            ("note-1",),
-        )
-        self.assertEqual(row, {"id": "note-1", "body": "first note", "embedding": "[1,2,3]"})
+        with self._database.session() as session:
+            note = session.get(IntegrationNoteModel, "note-1")
+            self.assertIsNotNone(note)
+            assert note is not None
+            self.assertEqual((note.body, note.priority), ("first note", 3))
 
-    def test_executemany_and_fetch_all(self) -> None:
-        self._database.execute(
-            """
-            CREATE TABLE IF NOT EXISTS batch_notes (
-                id TEXT PRIMARY KEY,
-                body TEXT NOT NULL
-            );
-            """
-        )
-        result = self._database.executemany(
-            "INSERT INTO batch_notes (id, body) VALUES (%s, %s) ON CONFLICT (id) DO NOTHING;",
-            [("note-2", "second note"), ("note-3", "third note")],
-        )
-        self.assertGreaterEqual(result.rows_affected, 0)
+    def test_orm_select(self) -> None:
+        with self._database.session() as session:
+            session.add_all(
+                [
+                    IntegrationNoteModel(id="note-2", body="second note"),
+                    IntegrationNoteModel(id="note-3", body="third note"),
+                ]
+            )
 
-        rows = self._database.fetch_all(
-            "SELECT id, body FROM batch_notes WHERE id IN (%s, %s) ORDER BY id;",
-            ("note-2", "note-3"),
-        )
-        self.assertEqual(
-            rows,
-            [
-                {"id": "note-2", "body": "second note"},
-                {"id": "note-3", "body": "third note"},
-            ],
-        )
+        with self._database.session() as session:
+            notes = session.scalars(
+                select(IntegrationNoteModel)
+                .where(IntegrationNoteModel.id.in_(["note-2", "note-3"]))
+                .order_by(IntegrationNoteModel.id)
+            ).all()
+        self.assertEqual([(note.id, note.body) for note in notes], [("note-2", "second note"), ("note-3", "third note")])
 
     def test_transaction_rolls_back_on_error(self) -> None:
-        self._database.execute(
-            """
-            CREATE TABLE IF NOT EXISTS rollback_notes (
-                id TEXT PRIMARY KEY,
-                body TEXT NOT NULL
-            );
-            """
-        )
         with self.assertRaises(RuntimeError):
-            with self._database.transaction() as connection:
-                connection.execute(
-                    "INSERT INTO rollback_notes (id, body) VALUES (%s, %s);",
-                    ("note-rollback", "should disappear"),
-                )
+            with self._database.session() as session:
+                session.add(IntegrationNoteModel(id="note-rollback", body="should disappear"))
                 raise RuntimeError("boom")
 
-        row = self._database.fetch_one(
-            "SELECT id FROM rollback_notes WHERE id = %s;",
-            ("note-rollback",),
-        )
-        self.assertIsNone(row)
-
-    def test_migrations_table_created(self) -> None:
-        rows = self._database.fetch_all("SELECT version, name FROM schema_migrations ORDER BY version;")
-        self.assertEqual([row["version"] for row in rows], ["0001", "0002", "0003"])
+        with self._database.session() as session:
+            self.assertIsNone(session.get(IntegrationNoteModel, "note-rollback"))
 
     def test_graph_store_roundtrip_and_traversal(self) -> None:
         self._graph.upsert_node(GraphNode(node_id="user-1", node_type="user", properties={"name": "Alice"}))
