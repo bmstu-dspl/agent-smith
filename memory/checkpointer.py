@@ -15,7 +15,7 @@ class Checkpointer:
     async def init(self, config: DatabaseConfig) -> AsyncPostgresSaver:
         self._cm = AsyncPostgresSaver.from_conn_string(config.dsn)
         self._saver = await self._cm.__aenter__()
-        await self._saver.setup()  # идемпотентно создаёт checkpoints/checkpoint_writes
+        await self._saver.setup()
         return self._saver
 
     async def close(self) -> None:
