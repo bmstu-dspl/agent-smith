@@ -1,5 +1,7 @@
 # agent-smith
 
+Production deployment, backup, and rollback: [DEPLOYMENT.md](DEPLOYMENT.md).
+
 ## Стек
 
 - Python 3.14
