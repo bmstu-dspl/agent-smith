@@ -24,6 +24,37 @@ class MarkTaskStatusInput(BaseModel):
     reason: str | None = Field(None, description="Причина выбранного статуса")
 
 
+class AskUserOption(BaseModel):
+    label: str = Field(..., description="Короткий текст кнопки для пользователя")
+    value: str = Field(..., description="Короткий идентификатор выбора латиницей")
+    user_message: str = Field(..., description="Фраза от лица пользователя, которую агент получит при выборе")
+
+
+class AskUserInput(BaseModel):
+    question: str = Field(..., description="Вопрос, который нужно задать пользователю")
+    options: list[AskUserOption] = Field(default_factory=list, description="Варианты быстрого ответа")
+    allow_free_text: bool = Field(True, description="Можно ли пользователю ответить произвольным текстом")
+
+
+def _dump_option(option) -> dict:
+    if hasattr(option, "model_dump"):
+        return option.model_dump()
+    if isinstance(option, dict):
+        return option
+    return {}
+
+
+@tool(args_schema=AskUserInput)
+async def ask_user(question: str, options: list[dict] | None = None, allow_free_text: bool = True) -> dict:
+    """Задает пользователю уточняющий вопрос и предлагает варианты быстрого ответа."""
+    return {
+        "status": "waiting_user",
+        "question": question,
+        "options": [_dump_option(option) for option in (options or [])],
+        "allow_free_text": allow_free_text,
+    }
+
+
 @tool(args_schema=RequestClarificationInput)
 async def request_clarification(question: str, missing_fields: list[str] | None = None) -> dict:
     """Формирует запрос на уточнение недостающих данных у пользователя."""
@@ -65,6 +96,7 @@ async def mark_task_status(status: str, reason: str | None = None) -> dict:
 
 def get_core_tools():
     return [
+        ask_user,
         request_clarification,
         handoff_to_operator,
         summarize_dialog,

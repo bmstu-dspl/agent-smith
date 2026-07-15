@@ -24,14 +24,3 @@ class ToolRegistry:
             }
             for tool in self.get_tools()
         ]
-
-    def describe_button_actions(self) -> list[dict[str, str]]:
-        hidden_actions = {"mark_task_status", "summarize_dialog"}
-        return [
-            {
-                "name": tool.name,
-                "description": tool.description or "",
-            }
-            for tool in self.get_tools()
-            if tool.name not in hidden_actions
-        ]

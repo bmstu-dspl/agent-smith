@@ -11,21 +11,20 @@ from ai_core.contracts.schemas import Button, IncomingMessage
 from ai_core.graph.nodes import AgentNode, input_guard, route_after_input_guard, tool_output_guard
 from ai_core.graph.state import AgentState
 from ai_core.tools import ToolRegistry
-from ai_core.ui import ButtonDecider
 
 
 class StubGraph:
     """Fallback-граф без LLM и внешних tools для локального запуска без ключей."""
 
     async def adecide_buttons(self, payload: IncomingMessage) -> list[Button]:
-        if "номер" in payload.user_message.lower():
-            return [
-                Button(text="Забронировать номер", callback_data="book_room"),
-                Button(text="Посмотреть цены", callback_data="show_prices"),
-            ]
         return []
 
-    async def astream_response(self, payload: IncomingMessage, on_tool_call=None) -> AsyncIterator[str]:
+    async def astream_response(
+        self,
+        payload: IncomingMessage,
+        on_tool_call=None,
+        on_ask_user=None,
+    ) -> AsyncIterator[str]:
         fake_answer = (
             f"Вы написали: «{payload.user_message}». "
             f"Это потоковый ответ-заглушка, скоро здесь будет настоящий LLM."
@@ -130,19 +129,18 @@ class AgentGraph(StubGraph):
     def __init__(self, graph, llm, tool_registry: ToolRegistry) -> None:
         self.graph = graph
         self.tool_registry = tool_registry
-        self.button_decider = ButtonDecider(llm)
 
     async def adecide_buttons(self, payload: IncomingMessage) -> list[Button]:
-        try:
-            return await self.button_decider.decide(
-                payload=payload,
-                available_actions=self.tool_registry.describe_button_actions(),
-            )
-        except Exception:
-            return []
+        return []
 
-    async def astream_response(self, payload: IncomingMessage, on_tool_call=None) -> AsyncIterator[str]:
+    async def astream_response(
+        self,
+        payload: IncomingMessage,
+        on_tool_call=None,
+        on_ask_user=None,
+    ) -> AsyncIterator[str]:
         yielded_text = False
+        waiting_for_user = False
         pending_calls: dict[str, dict] = {}  # tool_call_id -> {"name": ..., "args": ...}
 
         async for chunk, metadata in self.graph.astream(
@@ -174,11 +172,20 @@ class AgentGraph(StubGraph):
                 # ToolMessage — результат. Как только пришёл — сразу пишем одну запись
                 # с args (из pending_calls) и result вместе.
                 call_id = getattr(chunk, "tool_call_id", None)
-                if call_id in pending_calls and on_tool_call is not None:
+                if call_id in pending_calls:
                     info = pending_calls.pop(call_id)
-                    await on_tool_call(info["name"], info["args"], _chunk_to_text(chunk))
+                    tool_name = info["name"]
+                    tool_args = info["args"]
+                    tool_result = _chunk_to_text(chunk)
 
-        if not yielded_text:
+                    if tool_name == "ask_user" and on_ask_user is not None:
+                        waiting_for_user = True
+                        await on_ask_user(tool_args, tool_result)
+
+                    if on_tool_call is not None:
+                        await on_tool_call(tool_name, tool_args, tool_result)
+
+        if not yielded_text and not waiting_for_user:
             yield "Не удалось сформировать ответ. Передаю обращение оператору."
 
 
