@@ -1,4 +1,3 @@
-# app/escalation_service.py
 import logging
 from typing import Dict, Optional, List
 from aiogram import Bot, F
