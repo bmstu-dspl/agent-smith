@@ -7,7 +7,8 @@ from pydantic import BaseModel, Field
 class IncomingMessage(BaseModel):
     """Контракт bot -> core. Поля синхронизированы с app/models.py в tg-bot-v1."""
     session_id: str = Field(..., description="Уникальный ID сессии пользователя")
-    user_message: str = Field(..., description="Текст сообщения от пользователя")
+    user_message: str = Field(..., description="Текст сообщения ИЛИ callback_data, если message_type='callback'")
+    message_type: Literal["text", "callback"] = "text"
     metadata: dict[str, Any] = Field(default_factory=dict)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
