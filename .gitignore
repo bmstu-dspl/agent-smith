@@ -3,3 +3,5 @@ vertex-ai-service-account.json
 .venv/
 __pycache__/
 secrets/
+.env.production
+backups/

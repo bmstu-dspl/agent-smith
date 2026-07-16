@@ -22,3 +22,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 app.include_router(messages.router)
+
+
+@app.get("/healthz", include_in_schema=False)
+async def healthcheck() -> dict[str, str]:
+    return {"status": "ok"}

@@ -41,6 +41,27 @@ class DatabaseConfigTestCase(TestCase):
             with self.assertRaises(DatabaseConfigurationError):
                 DatabaseConfig.from_env()
 
+    @patch("DB._config.Path.read_text", return_value="p@ss word\n")
+    def test_from_env_reads_password_file(self, read_text) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "POSTGRES_HOST": "postgres",
+                "POSTGRES_PORT": "5432",
+                "POSTGRES_DB": "agent_smith",
+                "POSTGRES_USER": "agent_smith",
+                "POSTGRES_PASSWORD_FILE": "/run/secrets/postgres_password",
+            },
+            clear=True,
+        ):
+            config = DatabaseConfig.from_env()
+
+        self.assertEqual(
+            config.dsn,
+            "postgresql://agent_smith:p%40ss%20word@postgres:5432/agent_smith",
+        )
+        read_text.assert_called_once_with(encoding="utf-8")
+
 
 class GraphValueObjectsTestCase(TestCase):
     def test_graph_records_are_constructible(self) -> None:

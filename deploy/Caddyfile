@@ -1,0 +1,15 @@
+{
+	admin off
+}
+
+{$APP_DOMAIN} {
+	encode zstd gzip
+
+	@webhook path /webhook/*
+	handle @webhook {
+		reverse_proxy bot:8080
+	}
+
+	respond /healthz 200
+	respond 404
+}

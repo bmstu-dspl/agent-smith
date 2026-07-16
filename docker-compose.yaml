@@ -1,84 +1,212 @@
+name: ${COMPOSE_PROJECT_NAME:-agent-smith}
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+x-database-environment: &database-environment
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: ${POSTGRES_DB:-agent_smith}
+  POSTGRES_USER: ${POSTGRES_USER:-agent_smith}
+  POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+  POSTGRES_POOL_SIZE: ${POSTGRES_POOL_SIZE:-5}
+  POSTGRES_MAX_OVERFLOW: ${POSTGRES_MAX_OVERFLOW:-10}
+
+x-application: &application
+  build:
+    context: .
+    dockerfile: Dockerfile
+    args:
+      VCS_REF: ${VCS_REF:-unknown}
+  pull_policy: build
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  logging: *default-logging
+  networks:
+    - backend
+
 services:
-  bot:
-    build: .
-    env_file:
-      - .env
-    restart: unless-stopped
-    ports:
-      - "8080:8080"
-    environment:
-      - AI_AGENT_URL=http://ai_agent:8000
-      - WEBHOOK_HOST=${WEBHOOK_HOST:-https://sycamore-glaucoma-citadel.ngrok-free.dev}
-      - POSTGRES_HOST=postgres
-      - POSTGRES_DB=${POSTGRES_DB}
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_PORT=5432
-    depends_on:
-      ai_agent:
-        condition: service_started
-      postgres:
-        condition: service_healthy
-    command: ["uv", "run", "--no-sync", "python", "run.py"]
-
-  ai_agent:
-    build:
-      context: .
-      dockerfile: Dockerfile.ai_agent
-    env_file:
-      - .env
-    restart: unless-stopped
-    ports:
-      - "8000:8000"
-    environment:
-      - POSTGRES_HOST=postgres
-      - POSTGRES_DB=${POSTGRES_DB}
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_PORT=5432
-      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - WATCHFILES_FORCE_POLLING=true
-      - GOOGLE_APPLICATION_CREDENTIALS=/app/secrets/sa-key.json
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-    depends_on:
-      postgres:
-        condition: service_healthy
-    volumes:
-      - ./ai_core:/app/ai_core
-      - ./memory:/app/memory
-      - ./DB:/app/DB
-      - ./secrets:/app/secrets
-    command:
-      [
-        "uv",
-        "run",
-        "--no-sync",
-        "uvicorn",
-        "ai_core.main:app",
-        "--reload",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8000",
-      ]
-
   postgres:
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector:0.8.5-pg16-bookworm
     restart: unless-stopped
+    stop_grace_period: 60s
+    shm_size: 256mb
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-agent_smith}
+      POSTGRES_USER: ${POSTGRES_USER:-agent_smith}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-      interval: 5s
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\" -h 127.0.0.1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: ${POSTGRES_CPU_LIMIT:-2.0}
+          memory: ${POSTGRES_MEMORY_LIMIT:-2G}
+    networks:
+      - backend
+
+  migrate:
+    <<: *application
+    restart: "no"
+    command: ["python", "deploy/migrate.py"]
+    environment:
+      <<: *database-environment
+    secrets:
+      - postgres_password
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  ai-agent:
+    <<: *application
+    restart: unless-stopped
+    command:
+      - python
+      - -m
+      - uvicorn
+      - ai_core.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --proxy-headers
+      - --forwarded-allow-ips=*
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    networks:
+      - backend
+      - egress
+    expose:
+      - "8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"
+      interval: 15s
       timeout: 5s
       retries: 5
+      start_period: 15s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          cpus: ${AI_AGENT_CPU_LIMIT:-1.0}
+          memory: ${AI_AGENT_MEMORY_LIMIT:-512M}
+
+  bot:
+    <<: *application
+    restart: unless-stopped
+    stop_grace_period: 30s
+    command: ["python", "run.py"]
+    environment:
+      <<: *database-environment
+      BOT_TOKEN_FILE: /run/secrets/bot_token
+      AI_AGENT_URL: http://ai-agent:8000
+      WEBHOOK_HOST: https://${APP_DOMAIN:?APP_DOMAIN must be set}
+      PORT: "8080"
+      RUN_DB_MIGRATIONS: "false"
+      DELETE_WEBHOOK_ON_SHUTDOWN: "false"
+      DROP_PENDING_UPDATES: "false"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    secrets:
+      - bot_token
+      - postgres_password
+    networks:
+      - backend
+      - egress
+    expose:
+      - "8080"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      ai-agent:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: ${BOT_CPU_LIMIT:-1.0}
+          memory: ${BOT_MEMORY_LIMIT:-512M}
+
+  caddy:
+    image: caddy:2.11.4-alpine
+    restart: unless-stopped
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?APP_DOMAIN must be set}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          cpus: ${CADDY_CPU_LIMIT:-0.5}
+          memory: ${CADDY_MEMORY_LIMIT:-128M}
+    networks:
+      - backend
+      - edge
+    depends_on:
+      bot:
+        condition: service_healthy
+
+secrets:
+  bot_token:
+    file: ${SECRETS_DIR:-./secrets}/bot_token
+  postgres_password:
+    file: ${SECRETS_DIR:-./secrets}/postgres_password
 
 volumes:
   postgres_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  backend:
+    internal: true
+  egress:
+  edge:

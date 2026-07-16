@@ -1,11 +1,17 @@
 services:
   ngrok:
-    image: ngrok/ngrok:latest
+    image: ngrok/ngrok:3.39.9-alpine
+    profiles: ["dev"]
     restart: unless-stopped
-    ports:
-      - "4040:4040"
+    command: ["start", "--all", "--config", "/etc/ngrok/ngrok.yml"]
     environment:
-      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
-    command: http bot:8080 --domain=${WEBHOOK_DOMAIN:-sycamore-glaucoma-citadel.ngrok-free.dev}
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
+    volumes:
+      - ./ngrok.yml:/etc/ngrok/ngrok.yml:ro
+    ports:
+      - "127.0.0.1:4040:4040"
+    networks:
+      - backend
     depends_on:
-      - bot
+      bot:
+        condition: service_healthy
