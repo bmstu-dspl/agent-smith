@@ -38,6 +38,29 @@ class StreamEndPayload(TypedDict):
     type: Literal["end"]
     session_id: str
 
+class HistoryItem(TypedDict):
+    role: str
+    content: str
+    created_at: str
+
+
+class HandoffPayload(TypedDict):
+    type: Literal["handoff"]
+    session_id: str
+    reason: str
+    summary: str
+    history: list[HistoryItem]
+
+
+def make_handoff(session_id: str, reason: str, summary: str, history: list[HistoryItem]) -> HandoffPayload:
+    return {
+        "type": "handoff",
+        "session_id": session_id,
+        "reason": reason,
+        "summary": summary,
+        "history": history,
+    }   
+
 
 def make_text_chunk(session_id: str, content: str) -> TextChunkPayload:
     return {"type": "text_chunk", "session_id": session_id, "content": content}
