@@ -10,13 +10,15 @@ from DB import DatabaseConfig
 from DB._graph_models import GraphEdgeModel, GraphNodeModel
 from DB._orm import Base
 from RAG._models import ChunkModel, DocumentModel, DocumentVersionModel
-
+from memory._models import MessageModel, SystemSettingModel
 _MODELS = (
     GraphNodeModel,
     GraphEdgeModel,
     DocumentModel,
     DocumentVersionModel,
     ChunkModel,
+    MessageModel,       
+    SystemSettingModel,
 )
 target_metadata = Base.metadata
 
