@@ -6,8 +6,10 @@ from typing import Any
 from sqlalchemy import DateTime, ForeignKeyConstraint, Index, Integer, Text, func, literal_column, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from pgvector.sqlalchemy import VECTOR
 
 from DB import OrmBase
+from RAG._embedding_constants import EMBEDDING_DIMENSIONS
 
 
 class DocumentModel(OrmBase):
@@ -89,6 +91,9 @@ class ChunkModel(OrmBase):
     start_byte: Mapped[int] = mapped_column(Integer, nullable=False)
     end_byte: Mapped[int] = mapped_column(Integer, nullable=False)
     visibility: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[list[float] | None] = mapped_column(VECTOR(EMBEDDING_DIMENSIONS))
+    embedding_model: Mapped[str | None] = mapped_column(Text)
+    embedded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     version: Mapped[DocumentVersionModel] = relationship(back_populates="chunks")
 
 
@@ -102,3 +107,12 @@ _chunk_fts_index = Index(
     postgresql_using="gin",
 )
 ChunkModel.__table__.append_constraint(_chunk_fts_index)
+_chunk_embedding_index = Index(
+    "idx_rag_chunks_embedding_hnsw",
+    ChunkModel.embedding,
+    postgresql_using="hnsw",
+    postgresql_with={"m": 16, "ef_construction": 64},
+    postgresql_ops={"embedding": "vector_cosine_ops"},
+    postgresql_where=ChunkModel.embedding.is_not(None),
+)
+ChunkModel.__table__.append_constraint(_chunk_embedding_index)

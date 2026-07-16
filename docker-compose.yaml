@@ -93,6 +93,15 @@ services:
       - --forwarded-allow-ips=*
     environment:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LLM_PROVIDER: ${LLM_PROVIDER:-google_vertex}
+      LLM_MODEL: ${LLM_MODEL:-gemini-2.5-flash}
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/google_service_account.json
+      GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
+      GOOGLE_CLOUD_LOCATION: ${GOOGLE_CLOUD_LOCATION:-global}
+      GOOGLE_GENAI_USE_VERTEXAI: "true"
+    secrets:
+      - source: google_service_account
+        target: google_service_account.json
     networks:
       - backend
       - egress
@@ -132,9 +141,18 @@ services:
       DELETE_WEBHOOK_ON_SHUTDOWN: "false"
       DROP_PENDING_UPDATES: "false"
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/google_service_account.json
+      GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
+      GOOGLE_EMBEDDING_LOCATION: ${GOOGLE_EMBEDDING_LOCATION:-us-central1}
+      GOOGLE_EMBEDDING_MODEL: ${GOOGLE_EMBEDDING_MODEL:-gemini-embedding-001}
+      GOOGLE_EMBEDDING_DIMENSIONS: "1536"
+      GOOGLE_EMBEDDING_TIMEOUT: ${GOOGLE_EMBEDDING_TIMEOUT:-30}
+      GOOGLE_EMBEDDING_MAX_RETRIES: ${GOOGLE_EMBEDDING_MAX_RETRIES:-3}
     secrets:
       - bot_token
       - postgres_password
+      - source: google_service_account
+        target: google_service_account.json
     networks:
       - backend
       - egress
@@ -199,6 +217,8 @@ secrets:
     file: ${SECRETS_DIR:-./secrets}/bot_token
   postgres_password:
     file: ${SECRETS_DIR:-./secrets}/postgres_password
+  google_service_account:
+    file: ${GOOGLE_SERVICE_ACCOUNT_FILE:-${SECRETS_DIR:-./secrets}/google_service_account.json}
 
 volumes:
   postgres_data:
