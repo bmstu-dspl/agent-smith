@@ -92,6 +92,8 @@ services:
       - --proxy-headers
       - --forwarded-allow-ips=*
     environment:
+      <<: *database-environment
+      RUN_DB_MIGRATIONS: "false"
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LLM_PROVIDER: ${LLM_PROVIDER:-google_vertex}
       LLM_MODEL: ${LLM_MODEL:-gemini-2.5-flash}
@@ -99,7 +101,13 @@ services:
       GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
       GOOGLE_CLOUD_LOCATION: ${GOOGLE_CLOUD_LOCATION:-global}
       GOOGLE_GENAI_USE_VERTEXAI: "true"
+      GOOGLE_EMBEDDING_LOCATION: ${GOOGLE_EMBEDDING_LOCATION:-us-central1}
+      GOOGLE_EMBEDDING_MODEL: ${GOOGLE_EMBEDDING_MODEL:-gemini-embedding-001}
+      GOOGLE_EMBEDDING_DIMENSIONS: "1536"
+      GOOGLE_EMBEDDING_TIMEOUT: ${GOOGLE_EMBEDDING_TIMEOUT:-30}
+      GOOGLE_EMBEDDING_MAX_RETRIES: ${GOOGLE_EMBEDDING_MAX_RETRIES:-3}
     secrets:
+      - postgres_password
       - source: google_service_account
         target: google_service_account.json
     networks:

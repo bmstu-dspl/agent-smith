@@ -8,7 +8,13 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from ai_core.contracts.schemas import Button, IncomingMessage
-from ai_core.graph.nodes import AgentNode, input_guard, route_after_input_guard, tool_output_guard
+from ai_core.graph.nodes import (
+    AgentNode,
+    RagRetrievalNode,
+    input_guard,
+    route_after_input_guard,
+    tool_output_guard,
+)
 from ai_core.graph.state import AgentState
 from ai_core.tools import ToolRegistry
 
@@ -84,7 +90,7 @@ def build_llm():
     raise ValueError(f"Unsupported LLM_PROVIDER: {provider}")
 
 
-def build_langgraph(llm, tool_registry: ToolRegistry, checkpointer=None):
+def build_langgraph(llm, tool_registry: ToolRegistry, checkpointer=None, rag_memory=None):
     tools = tool_registry.get_tools()
     agent_llm = llm.bind_tools(tools) if tools else llm
 
@@ -92,13 +98,20 @@ def build_langgraph(llm, tool_registry: ToolRegistry, checkpointer=None):
 
     workflow.add_node("input_guard", input_guard)
     workflow.add_node("agent", AgentNode(agent_llm))
+    if rag_memory is not None:
+        workflow.add_node("rag_retrieval", RagRetrievalNode(rag_memory))
+        next_node_after_guard = "rag_retrieval"
+        workflow.add_edge("rag_retrieval", "agent")
+    else:
+        next_node_after_guard = "agent"
+
     workflow.add_edge(START, "input_guard")
 
     workflow.add_conditional_edges(
         "input_guard",
         route_after_input_guard,
         {
-            "agent": "agent",
+            "agent": next_node_after_guard,
             "end": END,
         },
     )
@@ -189,11 +202,11 @@ class AgentGraph(StubGraph):
             yield "Не удалось сформировать ответ. Передаю обращение оператору."
 
 
-def build_graph(checkpointer=None, tool_registry: ToolRegistry | None = None) -> StubGraph:
+def build_graph(checkpointer=None, tool_registry: ToolRegistry | None = None, rag_memory=None) -> StubGraph:
     llm = build_llm()
     if llm is None:
         return StubGraph()
 
     registry = tool_registry or ToolRegistry()
-    graph = build_langgraph(llm, registry, checkpointer=checkpointer)
+    graph = build_langgraph(llm, registry, checkpointer=checkpointer, rag_memory=rag_memory)
     return AgentGraph(graph, llm, registry)
