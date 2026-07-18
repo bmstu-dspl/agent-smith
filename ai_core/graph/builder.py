@@ -13,6 +13,7 @@ from ai_core.graph.nodes import (
     RagRetrievalNode,
     input_guard,
     route_after_input_guard,
+    route_after_tool_output_guard,
     tool_output_guard,
 )
 from ai_core.graph.state import AgentState
@@ -128,7 +129,14 @@ def build_langgraph(llm, tool_registry: ToolRegistry, checkpointer=None, rag_mem
             },
         )
         workflow.add_edge("tools", "tool_output_guard")
-        workflow.add_edge("tool_output_guard", "agent")
+        workflow.add_conditional_edges(
+            "tool_output_guard",
+            route_after_tool_output_guard,
+            {
+                "agent": "agent",
+                "end": END,
+            },
+        )
     else:
         workflow.add_edge("agent", END)
 

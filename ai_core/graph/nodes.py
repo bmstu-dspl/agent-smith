@@ -1,6 +1,7 @@
+import json
 from typing import Literal
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from ai_core.graph.prompts import AGENT_SYSTEM_PROMPT
 from ai_core.graph.state import AgentState
@@ -85,6 +86,64 @@ class RagRetrievalNode:
         }
 
 
+def _parse_tool_payload(content: object) -> dict:
+    if isinstance(content, dict):
+        return content
+    if not isinstance(content, str):
+        return {"status": "invalid_tool_output", "raw": str(content)}
+
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        return {"status": "invalid_tool_output", "raw": content}
+
+    if isinstance(parsed, dict):
+        return parsed
+    return {"status": "invalid_tool_output", "raw": parsed}
+
+
 def tool_output_guard(state: AgentState) -> dict:
-    # Заглушка под будущую проверку результатов tools/MCP/RAG.
-    return {}
+    tool_messages = [
+        message
+        for message in state.get("messages", [])
+        if isinstance(message, ToolMessage)
+    ]
+    if not tool_messages:
+        return {}
+
+    payload = _parse_tool_payload(tool_messages[-1].content)
+    status = str(payload.get("status") or "").strip()
+    tool_result = json.dumps(payload, ensure_ascii=False)
+
+    if status == "waiting_user":
+        return {
+            "blocked": True,
+            "block_reason": "waiting_user",
+            "tool_result": tool_result,
+        }
+
+    if status == "handoff_requested":
+        return {
+            "intent": "handoff_to_operator",
+            "tool_result": tool_result,
+        }
+
+    if status == "completed":
+        return {
+            "intent": "task_completed",
+            "tool_result": tool_result,
+        }
+
+    if status == "invalid_tool_output":
+        return {
+            "intent": "tool_error",
+            "tool_result": tool_result,
+        }
+
+    return {"tool_result": tool_result}
+
+
+def route_after_tool_output_guard(state: AgentState) -> Literal["agent", "end"]:
+    if state.get("blocked") and state.get("block_reason") == "waiting_user":
+        return "end"
+    return "agent"
