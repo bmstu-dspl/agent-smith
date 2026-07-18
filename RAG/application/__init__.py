@@ -15,6 +15,7 @@ from .use_cases import (
     PublishVersionUseCase,
     RejectVersionUseCase,
     SearchPublishedMemoryUseCase,
+    VectorizeVersionUseCase,
 )
 
 __all__ = [
@@ -34,4 +35,5 @@ __all__ = [
     "PublishVersionUseCase",
     "RejectVersionUseCase",
     "SearchPublishedMemoryUseCase",
+    "VectorizeVersionUseCase",
 ]

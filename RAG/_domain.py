@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+import math
 from typing import Final
 
+from ._embedding_constants import EMBEDDING_DIMENSIONS
 from ._errors import ValidationError
 
 _SOURCE_TYPES: Final[set[str]] = {"text", "pdf", "docx", "md", "html"}
@@ -59,6 +61,9 @@ class Chunk:
     start_byte: int
     end_byte: int
     visibility: str
+    embedding: tuple[float, ...] | None = None
+    embedding_model: str | None = None
+    embedded_at: datetime | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "chunk_id", _normalized_non_empty(self.chunk_id, "chunk_id"))
@@ -76,6 +81,20 @@ class Chunk:
             raise ValidationError("chunk start offset must not be negative")
         if self.end_byte <= self.start_byte:
             raise ValidationError("chunk end offset must be greater than start offset")
+        if self.embedding is None:
+            if self.embedding_model is not None or self.embedded_at is not None:
+                raise ValidationError("embedding metadata requires an embedding")
+        else:
+            if not self.embedding_model or self.embedded_at is None:
+                raise ValidationError("embedding requires model and timestamp")
+            if len(self.embedding) != EMBEDDING_DIMENSIONS:
+                raise ValidationError(
+                    f"embedding must have {EMBEDDING_DIMENSIONS} dimensions"
+                )
+            if not all(math.isfinite(value) for value in self.embedding):
+                raise ValidationError("embedding contains a non-finite value")
+            if not any(value != 0 for value in self.embedding):
+                raise ValidationError("embedding must not be zero")
 
 
 @dataclass(slots=True)
@@ -154,6 +173,16 @@ class DocumentVersion:
         self.review_status = "archived"
         self.updated_at = now
 
+    def vectorize(self, chunks: list[Chunk], now: datetime) -> None:
+        if self.review_status == "archived":
+            raise ValidationError("archived version can not be modified")
+        if not self.chunks:
+            raise ValidationError("version has no chunks to vectorize")
+        if [chunk.chunk_id for chunk in chunks] != [chunk.chunk_id for chunk in self.chunks]:
+            raise ValidationError("vectorized chunks must match existing chunks")
+        self.chunks = list(chunks)
+        self.updated_at = now
+
 
 @dataclass(slots=True)
 class Document:
@@ -205,6 +234,17 @@ class Document:
         version.archive(now)
         if self.published_version_id == version.version_id:
             self.published_version_id = None
+        self.updated_at = now
+        return version
+
+    def vectorize_version(
+        self,
+        version_id: str,
+        chunks: list[Chunk],
+        now: datetime,
+    ) -> DocumentVersion:
+        version = self.get_version(version_id)
+        version.vectorize(chunks, now)
         self.updated_at = now
         return version
 

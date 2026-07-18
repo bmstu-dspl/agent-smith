@@ -7,6 +7,7 @@ from unittest import TestCase
 from uuid import uuid4
 
 from dotenv import dotenv_values
+from sqlalchemy import text
 from sqlalchemy.schema import CreateSchema, DropSchema
 
 from DB import DatabaseConfig, PostgresDatabase
@@ -262,6 +263,82 @@ class PostgresDocumentStoreIntegrationTestCase(TestCase):
         use_cases.delete_document(DeleteDocumentCommand("doc-lifecycle", "tenant-1"))
         self.assertIsNone(store.get("tenant-1", "doc-lifecycle"))
 
+    def test_vector_embedding_roundtrip_and_semantic_search(self) -> None:
+        now = datetime(2026, 7, 8, 12, 0, 0, tzinfo=timezone.utc)
+        provider = _PgEmbeddingProvider()
+        use_cases = MemoryUseCases(
+            PostgresDocumentStore(self._database),
+            embedding_provider=provider,
+            now_provider=lambda: now,
+        )
+        result = use_cases.ingest_text_document(
+            IngestTextDocumentCommand(
+                "doc-vector",
+                "ver-vector",
+                "tenant-vector",
+                "Vector memory",
+                "The deployment uses an immutable release process.",
+                trust_level="trusted",
+            )
+        )
+        self.assertTrue(result.chunks[0].is_embedded)
+        use_cases.approve_version(
+            ApproveVersionCommand("doc-vector", "ver-vector", "tenant-vector")
+        )
+        use_cases.publish_version(
+            PublishVersionCommand("doc-vector", "ver-vector", "tenant-vector")
+        )
+
+        results = use_cases.search_published_memory(
+            SearchPublishedMemoryQuery(
+                "tenant-vector",
+                "words absent from stored chunk",
+                retrieval_mode="semantic",
+            )
+        )
+        self.assertEqual([item.chunk_id for item in results], [result.chunks[0].chunk_id])
+        self.assertGreater(results[0].semantic_score or 0, 0.99)
+
+        wrong_model_results = PostgresDocumentStore(self._database).search_published(
+            "tenant-vector",
+            "words absent from stored chunk",
+            query_embedding=provider.embed_query("query"),
+            query_embedding_model="different-model",
+            retrieval_mode="semantic",
+        )
+        self.assertEqual(wrong_model_results, [])
+
+    def test_vector_schema_and_hnsw_index(self) -> None:
+        with self._database.engine.connect() as connection:
+            vector_type = connection.execute(
+                text(
+                    """
+                    SELECT format_type(attribute.atttypid, attribute.atttypmod)
+                    FROM pg_attribute AS attribute
+                    JOIN pg_class AS relation ON relation.oid = attribute.attrelid
+                    JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+                    WHERE namespace.nspname = current_schema()
+                      AND relation.relname = 'rag_chunks'
+                      AND attribute.attname = 'embedding'
+                    """
+                )
+            ).scalar_one()
+            index_definition = connection.execute(
+                text(
+                    """
+                    SELECT indexdef
+                    FROM pg_indexes
+                    WHERE schemaname = current_schema()
+                      AND tablename = 'rag_chunks'
+                      AND indexname = 'idx_rag_chunks_embedding_hnsw'
+                    """
+                )
+            ).scalar_one()
+
+        self.assertEqual(vector_type, "vector(1536)")
+        self.assertIn("USING hnsw", index_definition)
+        self.assertIn("vector_cosine_ops", index_definition)
+
 
 def _dsn_from_env(env: dict[str, str]) -> str:
     direct_dsn = os.environ.get("DB_TEST_POSTGRES_DSN")
@@ -278,3 +355,15 @@ def _dsn_from_env(env: dict[str, str]) -> str:
     password = os.environ.get("DB_TEST_POSTGRES_PASSWORD") or env["POSTGRES_PASSWORD"]
     database = os.environ.get("DB_TEST_POSTGRES_DB") or env["POSTGRES_DB"]
     return f"postgresql://{user}:{password}@{host}:{port}/{database}"
+
+
+class _PgEmbeddingProvider:
+    model = "test-embedding-1536"
+    dimensions = 1536
+
+    def embed_documents(self, texts: tuple[str, ...]) -> tuple[tuple[float, ...], ...]:
+        vector = (1.0, *([0.0] * 1535))
+        return tuple(vector for _ in texts)
+
+    def embed_query(self, text: str) -> tuple[float, ...]:
+        return (1.0, *([0.0] * 1535))

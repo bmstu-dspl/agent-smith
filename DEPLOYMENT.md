@@ -24,7 +24,7 @@ This topology is suitable for one production node. It is not highly available. F
 - Linux host with Docker Engine and Docker Compose v2.
 - DNS `A`/`AAAA` record for `APP_DOMAIN` pointing to the host.
 - Inbound TCP `80`, TCP `443`, and UDP `443` allowed.
-- Outbound HTTPS allowed for Telegram and ACME.
+- Outbound HTTPS allowed for Telegram, ACME, Google OAuth, and Vertex AI.
 - Enough disk for PostgreSQL data, WAL, backups, and Docker image layers.
 
 ## Initial deployment
@@ -45,10 +45,13 @@ mkdir -p secrets
 chmod 700 secrets
 printf '%s' 'replace-with-a-random-password' > secrets/postgres_password
 printf '%s' 'replace-with-telegram-token' > secrets/bot_token
+# Save the complete service account JSON received from Google at the path configured by
+# GOOGLE_SERVICE_ACCOUNT_FILE (default: secrets/google_service_account.json).
 chmod 600 secrets/*
 ```
 
-Set `APP_DOMAIN` in `.env`, then validate and start:
+Set `APP_DOMAIN` and set `GOOGLE_CLOUD_PROJECT` to the JSON `project_id` in `.env`, then
+validate and start:
 
 ```bash
 docker compose config --quiet
@@ -60,6 +63,22 @@ docker compose logs migrate
 
 Deployment is successful when `postgres`, `ai-agent`, `bot`, and `caddy` are healthy/running and `migrate` exited with code `0`.
 
+Validate the service account and Vertex AI endpoint before starting production:
+
+```bash
+GOOGLE_APPLICATION_CREDENTIALS="$PWD/secrets/google_service_account.json" \
+GOOGLE_EMBEDDING_LOCATION=us-central1 \
+RUN_VERTEX_EMBEDDING_INTEGRATION=1 \
+uv run python -m unittest \
+  RAG.tests.test_embeddings.GoogleEmbeddingProviderIntegrationTestCase -v
+```
+
+The service account project must have the Vertex AI API enabled and permission
+`aiplatform.endpoints.predict`; `roles/aiplatform.user` includes it. The application uses
+`gemini-embedding-001`, requests 1536 dimensions, and needs outbound access to Google OAuth
+and `${GOOGLE_EMBEDDING_LOCATION:-us-central1}-aiplatform.googleapis.com:443`. The same
+service account JSON is mounted into both `ai-agent` and `bot`; do not create a duplicate key.
+
 ## Release process
 
 1. Merge a tested PR into the protected `main` branch.
@@ -67,6 +86,11 @@ Deployment is successful when `postgres`, `ai-agent`, `bot`, and `caddy` are hea
 3. On the production host, run `DEPLOY_BRANCH=main ./deploy/update.sh`.
 4. Record the deployed Git SHA printed by the script.
 5. Verify migration exit code, healthchecks, webhook delivery, and error rate.
+
+When deploying the Google embedding provider over a database containing vectors from another
+model, re-vectorize every active document version before relying on semantic search. Embedding
+spaces from different models are not compatible; lexical search remains available during the
+backfill.
 
 `update.sh` refuses a dirty worktree or wrong branch, performs only `git pull --ff-only`, builds the application image locally from the checked-out source, labels it with the full Git SHA, and then recreates services. No application image is pulled from a Docker registry. PostgreSQL, Caddy, Python, and uv remain pinned third-party base images and are still obtained from their image registries.
 
@@ -114,7 +138,10 @@ docker compose exec postgres pg_isready -U "${POSTGRES_USER:-agent_smith}" -d "$
 curl --fail "https://${APP_DOMAIN}/healthz"
 ```
 
-Docker log rotation prevents unbounded local logs, but production should ship logs and metrics off-host. Alert at minimum on container restarts, healthcheck failures, disk pressure, PostgreSQL connection saturation, backup failure, and webhook error rate.
+Docker log rotation prevents unbounded local logs, but production should ship logs and metrics
+off-host. Alert at minimum on container restarts, healthcheck failures, disk pressure,
+PostgreSQL connection saturation, backup failure, webhook error rate, Vertex AI timeouts,
+HTTP `429`, and embedding failures.
 
 ## Upgrade policy
 

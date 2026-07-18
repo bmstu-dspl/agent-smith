@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from RAG.application.ports import Clock, DocumentStore, utcnow
+from RAG.application.ports import Clock, DocumentStore, EmbeddingProvider, utcnow
+from RAG._errors import EmbeddingConfigurationError
 from RAG.application.ports import PublishedMemorySearchStore
 from RAG.application.use_cases import (
     AddDocumentVersionUseCase,
@@ -18,6 +19,7 @@ from RAG.application.use_cases import (
     PublishVersionUseCase,
     RejectVersionUseCase,
     SearchPublishedMemoryUseCase,
+    VectorizeVersionUseCase,
 )
 from RAG.types import (
     AddDocumentVersionCommand,
@@ -43,6 +45,7 @@ from RAG.types import (
     PublishVersionCommand,
     RejectVersionCommand,
     SearchPublishedMemoryQuery,
+    VectorizeVersionCommand,
 )
 
 
@@ -52,14 +55,15 @@ class MemoryUseCases:
         store: DocumentStore,
         *,
         search_store: PublishedMemorySearchStore | None = None,
+        embedding_provider: EmbeddingProvider | None = None,
         now_provider: Clock | None = None,
     ) -> None:
         clock = now_provider or utcnow
         resolved_search_store = search_store or store
         self.create_document_uc = CreateDocumentUseCase(store, clock)
         self.add_document_version_uc = AddDocumentVersionUseCase(store, clock)
-        self.ingest_text_document_uc = IngestTextDocumentUseCase(store, clock)
-        self.mark_version_processed_uc = MarkVersionProcessedUseCase(store, clock)
+        self.ingest_text_document_uc = IngestTextDocumentUseCase(store, clock, embedding_provider)
+        self.mark_version_processed_uc = MarkVersionProcessedUseCase(store, clock, embedding_provider)
         self.approve_version_uc = ApproveVersionUseCase(store, clock)
         self.reject_version_uc = RejectVersionUseCase(store, clock)
         self.archive_version_uc = ArchiveVersionUseCase(store, clock)
@@ -69,8 +73,17 @@ class MemoryUseCases:
         self.get_document_uc = GetDocumentUseCase(store)
         self.list_documents_uc = ListDocumentsUseCase(store)
         self.get_version_chunks_uc = GetVersionChunksUseCase(store)
-        self.search_published_memory_uc = SearchPublishedMemoryUseCase(resolved_search_store)
-        self.build_agent_context_uc = BuildAgentContextUseCase(resolved_search_store)
+        self.vectorize_version_uc = (
+            VectorizeVersionUseCase(store, clock, embedding_provider)
+            if embedding_provider is not None
+            else None
+        )
+        self.search_published_memory_uc = SearchPublishedMemoryUseCase(
+            resolved_search_store, embedding_provider
+        )
+        self.build_agent_context_uc = BuildAgentContextUseCase(
+            resolved_search_store, embedding_provider
+        )
 
     def create_document(self, command: CreateDocumentCommand) -> DocumentDTO:
         return self.create_document_uc.execute(command)
@@ -110,6 +123,11 @@ class MemoryUseCases:
 
     def get_version_chunks(self, query: GetVersionChunksQuery) -> tuple[ChunkDTO, ...]:
         return self.get_version_chunks_uc.execute(query)
+
+    def vectorize_version(self, command: VectorizeVersionCommand) -> tuple[ChunkDTO, ...]:
+        if self.vectorize_version_uc is None:
+            raise EmbeddingConfigurationError("vectorization requires an embedding provider")
+        return self.vectorize_version_uc.execute(command)
 
     def search_published_memory(self, query: SearchPublishedMemoryQuery) -> tuple[MemorySearchResultDTO, ...]:
         return self.search_published_memory_uc.execute(query)

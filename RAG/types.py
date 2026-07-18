@@ -52,6 +52,9 @@ class ChunkInput:
     start_byte: int
     end_byte: int
     visibility: str
+    embedding: tuple[float, ...] | None = None
+    embedding_model: str | None = None
+    embedded_at: datetime | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -93,6 +96,13 @@ class DeleteVersionCommand:
 @dataclass(slots=True, frozen=True)
 class DeleteDocumentCommand:
     document_id: str
+    tenant_id: str
+
+
+@dataclass(slots=True, frozen=True)
+class VectorizeVersionCommand:
+    document_id: str
+    version_id: str
     tenant_id: str
 
 
@@ -146,6 +156,9 @@ class ChunkDTO:
     start_byte: int
     end_byte: int
     visibility: str
+    is_embedded: bool = False
+    embedding_model: str | None = None
+    embedded_at: datetime | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -198,9 +211,11 @@ class SearchPublishedMemoryQuery:
     limit: int = 8
     source_type: str | None = None
     visibility: str | None = None
+    retrieval_mode: str = "hybrid"
 
     def __post_init__(self) -> None:
         _validate_search(self.tenant_id, self.query, self.limit)
+        _validate_retrieval_mode(self.retrieval_mode)
 
 
 @dataclass(slots=True, frozen=True)
@@ -216,6 +231,8 @@ class MemorySearchResultDTO:
     source_type: str
     trust_level: str
     visibility: str
+    semantic_score: float | None = None
+    lexical_score: float | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -226,9 +243,11 @@ class BuildAgentContextQuery:
     source_type: str | None = None
     visibility: str | None = None
     max_context_chars: int = 12_000
+    retrieval_mode: str = "hybrid"
 
     def __post_init__(self) -> None:
         _validate_search(self.tenant_id, self.query, self.limit)
+        _validate_retrieval_mode(self.retrieval_mode)
         if self.max_context_chars <= 0:
             raise ValueError("max_context_chars must be positive")
 
@@ -254,3 +273,8 @@ def _validate_page(limit: int, offset: int, *, max_limit: int) -> None:
         raise ValueError(f"limit must be between 1 and {max_limit}")
     if offset < 0:
         raise ValueError("offset must not be negative")
+
+
+def _validate_retrieval_mode(value: str) -> None:
+    if value not in {"hybrid", "semantic", "lexical"}:
+        raise ValueError("retrieval_mode must be hybrid, semantic, or lexical")

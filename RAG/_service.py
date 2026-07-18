@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .application import MemoryUseCases
 from ._repository import DocumentStore
+from .application.ports import EmbeddingProvider
 from .types import (
     AddDocumentVersionCommand,
     AgentContextDTO,
@@ -26,12 +27,23 @@ from .types import (
     PublishVersionCommand,
     RejectVersionCommand,
     SearchPublishedMemoryQuery,
+    VectorizeVersionCommand,
 )
 
 
 class MemoryModule:
-    def __init__(self, store: DocumentStore, *, now_provider=None) -> None:
-        self._use_cases = MemoryUseCases(store, now_provider=now_provider)
+    def __init__(
+        self,
+        store: DocumentStore,
+        *,
+        embedding_provider: EmbeddingProvider | None = None,
+        now_provider=None,
+    ) -> None:
+        self._use_cases = MemoryUseCases(
+            store,
+            embedding_provider=embedding_provider,
+            now_provider=now_provider,
+        )
 
     def create_document(self, command: CreateDocumentCommand) -> DocumentDTO:
         return self._use_cases.create_document(command)
@@ -71,6 +83,9 @@ class MemoryModule:
 
     def get_version_chunks(self, query: GetVersionChunksQuery) -> tuple[ChunkDTO, ...]:
         return self._use_cases.get_version_chunks(query)
+
+    def vectorize_version(self, command: VectorizeVersionCommand) -> tuple[ChunkDTO, ...]:
+        return self._use_cases.vectorize_version(command)
 
     def search_published_memory(self, query: SearchPublishedMemoryQuery) -> tuple[MemorySearchResultDTO, ...]:
         return self._use_cases.search_published_memory(query)

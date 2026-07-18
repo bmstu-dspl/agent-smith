@@ -68,4 +68,7 @@ def to_chunk_dto(chunk: Chunk) -> ChunkDTO:
         start_byte=chunk.start_byte,
         end_byte=chunk.end_byte,
         visibility=chunk.visibility,
+        is_embedded=chunk.embedding is not None,
+        embedding_model=chunk.embedding_model,
+        embedded_at=chunk.embedded_at,
     )

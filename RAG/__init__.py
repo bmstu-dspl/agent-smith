@@ -3,9 +3,12 @@ from ._errors import (
     ConcurrentModificationError,
     DocumentAlreadyExistsError,
     DocumentNotFoundError,
+    EmbeddingConfigurationError,
+    EmbeddingError,
     MemoryError,
     ValidationError,
 )
+from .embeddings import GoogleEmbeddingConfig, GoogleEmbeddingProvider
 from .types import (
     AddDocumentVersionCommand,
     AgentContextDTO,
@@ -31,6 +34,7 @@ from .types import (
     PublishVersionCommand,
     RejectVersionCommand,
     SearchPublishedMemoryQuery,
+    VectorizeVersionCommand,
 )
 
 __all__ = [
@@ -51,6 +55,10 @@ __all__ = [
     "DocumentDTO",
     "DocumentListItemDTO",
     "DocumentVersionDTO",
+    "EmbeddingConfigurationError",
+    "EmbeddingError",
+    "GoogleEmbeddingConfig",
+    "GoogleEmbeddingProvider",
     "GetDocumentQuery",
     "GetVersionChunksQuery",
     "InMemoryDocumentStore",
@@ -66,4 +74,5 @@ __all__ = [
     "RejectVersionCommand",
     "SearchPublishedMemoryQuery",
     "ValidationError",
+    "VectorizeVersionCommand",
 ]

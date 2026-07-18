@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, replace
+import math
 from typing import Protocol
 
-from sqlalchemy import case, func, literal_column, select
+from sqlalchemy import case, func, literal_column, select, text as sql_text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.exc import StaleDataError
@@ -45,6 +46,9 @@ class PublishedMemorySearchStore(Protocol):
         limit: int = 8,
         source_type: str | None = None,
         visibility: str | None = None,
+        query_embedding: tuple[float, ...] | None = None,
+        query_embedding_model: str | None = None,
+        retrieval_mode: str = "hybrid",
     ) -> list[MemorySearchResultDTO]: ...
 
 
@@ -114,6 +118,9 @@ class InMemoryDocumentStore:
         limit: int = 8,
         source_type: str | None = None,
         visibility: str | None = None,
+        query_embedding: tuple[float, ...] | None = None,
+        query_embedding_model: str | None = None,
+        retrieval_mode: str = "hybrid",
     ) -> list[MemorySearchResultDTO]:
         normalized_query = query.strip().lower()
         if not normalized_query:
@@ -134,7 +141,17 @@ class InMemoryDocumentStore:
                 continue
             for chunk in version.chunks:
                 text = chunk.text.lower()
-                if normalized_query not in text:
+                lexical_score = float(text.count(normalized_query))
+                semantic_score = (
+                    _cosine_similarity(chunk.embedding, query_embedding)
+                    if chunk.embedding_model == query_embedding_model
+                    else None
+                )
+                if retrieval_mode == "lexical" and lexical_score == 0:
+                    continue
+                if retrieval_mode == "semantic" and semantic_score is None:
+                    continue
+                if retrieval_mode == "hybrid" and lexical_score == 0 and semantic_score is None:
                     continue
                 results.append(
                     MemorySearchResultDTO(
@@ -144,16 +161,17 @@ class InMemoryDocumentStore:
                         tenant_id=document.tenant_id,
                         title=document.title,
                         text=chunk.text,
-                        score=float(text.count(normalized_query)),
+                        score=0.0,
                         chunk_index=chunk.index,
                         source_type=document.source_metadata.source_type,
                         trust_level=version.trust_level,
                         visibility=chunk.visibility,
+                        semantic_score=semantic_score,
+                        lexical_score=lexical_score or None,
                     )
                 )
 
-        results.sort(key=lambda item: (-item.score, item.document_id, item.chunk_index))
-        return results[:limit]
+        return _rank_in_memory_results(results, retrieval_mode, limit)
 
 
 class PostgresDocumentStore:
@@ -245,73 +263,67 @@ class PostgresDocumentStore:
         limit: int = 8,
         source_type: str | None = None,
         visibility: str | None = None,
+        query_embedding: tuple[float, ...] | None = None,
+        query_embedding_model: str | None = None,
+        retrieval_mode: str = "hybrid",
     ) -> list[MemorySearchResultDTO]:
         normalized_query = query.strip()
         if not normalized_query:
             return []
 
-        like_query = f"%{_escape_like(normalized_query)}%"
+        candidate_limit = min(max(limit * 10, 50), 1000)
         language = literal_column("'simple'::regconfig")
         search_query = func.websearch_to_tsquery(language, normalized_query)
         search_vector = func.to_tsvector(language, ChunkModel.text)
-        score = (
+        like_query = f"%{_escape_like(normalized_query)}%"
+        lexical_score = (
             func.ts_rank_cd(search_vector, search_query)
             + case((ChunkModel.text.ilike(like_query, escape="\\"), 1.0), else_=0.0)
-        ).label("score")
-        statement = (
-            select(
-                ChunkModel.chunk_id,
-                DocumentModel.document_id,
-                DocumentVersionModel.version_id,
-                DocumentModel.tenant_id,
-                DocumentModel.title,
-                ChunkModel.text,
-                ChunkModel.chunk_index,
-                _source_type_expression().label("source_type"),
-                DocumentVersionModel.trust_level,
-                ChunkModel.visibility,
-                score,
-            )
-            .join(DocumentVersionModel, ChunkModel.version)
-            .join(DocumentModel, DocumentVersionModel.document)
-            .where(
-                DocumentModel.tenant_id == tenant_id.strip(),
-                DocumentVersionModel.review_status == "published",
-                DocumentModel.published_version_id == DocumentVersionModel.version_id,
-                search_vector.bool_op("@@")(search_query) | ChunkModel.text.ilike(like_query, escape="\\"),
-            )
-            .order_by(score.desc(), DocumentModel.document_id, ChunkModel.chunk_index)
-            .limit(limit)
+        ).label("lexical_score")
+
+        lexical_statement = _published_search_statement(
+            tenant_id, source_type=source_type, visibility=visibility
+        ).add_columns(lexical_score).where(
+            search_vector.bool_op("@@")(search_query)
+            | ChunkModel.text.ilike(like_query, escape="\\")
+        ).order_by(lexical_score.desc(), DocumentModel.document_id, ChunkModel.chunk_index).limit(
+            candidate_limit
         )
-        if source_type is not None:
-            statement = statement.where(
-                _source_type_expression() == source_type.strip().lower()
-            )
-        if visibility is not None:
-            statement = statement.where(ChunkModel.visibility == visibility.strip().lower())
+
+        semantic_statement = None
+        if query_embedding is not None and query_embedding_model is not None:
+            distance = ChunkModel.embedding.cosine_distance(list(query_embedding)).label("distance")
+            semantic_statement = _published_search_statement(
+                tenant_id, source_type=source_type, visibility=visibility
+            ).add_columns(distance).where(
+                ChunkModel.embedding.is_not(None),
+                ChunkModel.embedding_model == query_embedding_model,
+            ).order_by(
+                distance, DocumentModel.document_id, ChunkModel.chunk_index
+            ).limit(candidate_limit)
 
         with self._database.session() as session:
-            rows = session.execute(statement).mappings().all()
-            return [
-                MemorySearchResultDTO(
-                    chunk_id=row["chunk_id"],
-                    document_id=row["document_id"],
-                    version_id=row["version_id"],
-                    tenant_id=row["tenant_id"],
-                    title=row["title"],
-                    text=row["text"],
-                    score=float(row["score"]),
-                    chunk_index=row["chunk_index"],
-                    source_type=row["source_type"],
-                    trust_level=row["trust_level"],
-                    visibility=row["visibility"],
-                )
-                for row in rows
-            ]
+            lexical_rows = (
+                session.execute(lexical_statement).mappings().all()
+                if retrieval_mode in {"hybrid", "lexical"}
+                else []
+            )
+            semantic_rows = (
+                _execute_semantic_search(session, semantic_statement)
+                if semantic_statement is not None and retrieval_mode in {"hybrid", "semantic"}
+                else []
+            )
+        return _fuse_search_rows(semantic_rows, lexical_rows, limit)
 
 
 def _document_options():
     return (selectinload(DocumentModel.versions).selectinload(DocumentVersionModel.chunks),)
+
+
+def _execute_semantic_search(session, statement):
+    # pgvector applies WHERE filters after approximate scans; iterative scan replenishes candidates.
+    session.execute(sql_text("SET LOCAL hnsw.iterative_scan = 'strict_order'"))
+    return session.execute(statement).mappings().all()
 
 
 def _source_type_expression():
@@ -357,6 +369,9 @@ def _version_model(version: DocumentVersion) -> DocumentVersionModel:
                 start_byte=chunk.start_byte,
                 end_byte=chunk.end_byte,
                 visibility=chunk.visibility,
+                embedding=list(chunk.embedding) if chunk.embedding is not None else None,
+                embedding_model=chunk.embedding_model,
+                embedded_at=chunk.embedded_at,
             )
             for chunk in version.chunks
         ],
@@ -399,6 +414,13 @@ def _document_domain(model: DocumentModel) -> Document:
                     start_byte=chunk.start_byte,
                     end_byte=chunk.end_byte,
                     visibility=chunk.visibility,
+                    embedding=(
+                        tuple(float(value) for value in chunk.embedding)
+                        if chunk.embedding is not None
+                        else None
+                    ),
+                    embedding_model=chunk.embedding_model,
+                    embedded_at=chunk.embedded_at,
                 )
                 for chunk in version_model.chunks
             ],
@@ -449,6 +471,9 @@ def _sync_version_model(model: DocumentVersionModel, version: DocumentVersion) -
             chunk_model.start_byte = chunk.start_byte
             chunk_model.end_byte = chunk.end_byte
             chunk_model.visibility = chunk.visibility
+            chunk_model.embedding = list(chunk.embedding) if chunk.embedding is not None else None
+            chunk_model.embedding_model = chunk.embedding_model
+            chunk_model.embedded_at = chunk.embedded_at
 
 
 def _chunk_model(chunk: Chunk) -> ChunkModel:
@@ -461,8 +486,130 @@ def _chunk_model(chunk: Chunk) -> ChunkModel:
         start_byte=chunk.start_byte,
         end_byte=chunk.end_byte,
         visibility=chunk.visibility,
+        embedding=list(chunk.embedding) if chunk.embedding is not None else None,
+        embedding_model=chunk.embedding_model,
+        embedded_at=chunk.embedded_at,
     )
 
 
 def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _published_search_statement(
+    tenant_id: str,
+    *,
+    source_type: str | None,
+    visibility: str | None,
+):
+    statement = (
+        select(
+            ChunkModel.chunk_id,
+            DocumentModel.document_id,
+            DocumentVersionModel.version_id,
+            DocumentModel.tenant_id,
+            DocumentModel.title,
+            ChunkModel.text,
+            ChunkModel.chunk_index,
+            _source_type_expression().label("source_type"),
+            DocumentVersionModel.trust_level,
+            ChunkModel.visibility,
+        )
+        .join(DocumentVersionModel, ChunkModel.version)
+        .join(DocumentModel, DocumentVersionModel.document)
+        .where(
+            DocumentModel.tenant_id == tenant_id.strip(),
+            DocumentVersionModel.review_status == "published",
+            DocumentModel.published_version_id == DocumentVersionModel.version_id,
+        )
+    )
+    if source_type is not None:
+        statement = statement.where(_source_type_expression() == source_type.strip().lower())
+    if visibility is not None:
+        statement = statement.where(ChunkModel.visibility == visibility.strip().lower())
+    return statement
+
+
+def _fuse_search_rows(semantic_rows, lexical_rows, limit: int) -> list[MemorySearchResultDTO]:
+    candidates: dict[str, dict[str, object]] = {}
+    for rank, row in enumerate(semantic_rows, start=1):
+        item = candidates.setdefault(row["chunk_id"], {"row": row, "score": 0.0})
+        item["score"] = float(item["score"]) + 1.0 / (60 + rank)
+        item["semantic_score"] = 1.0 - float(row["distance"])
+    for rank, row in enumerate(lexical_rows, start=1):
+        item = candidates.setdefault(row["chunk_id"], {"row": row, "score": 0.0})
+        item["score"] = float(item["score"]) + 1.0 / (60 + rank)
+        item["lexical_score"] = float(row["lexical_score"])
+
+    ranked = sorted(
+        candidates.values(),
+        key=lambda item: (
+            -float(item["score"]),
+            str(item["row"]["document_id"]),
+            int(item["row"]["chunk_index"]),
+        ),
+    )
+    return [_search_result(item) for item in ranked[:limit]]
+
+
+def _search_result(item: dict[str, object]) -> MemorySearchResultDTO:
+    row = item["row"]
+    return MemorySearchResultDTO(
+        chunk_id=row["chunk_id"],
+        document_id=row["document_id"],
+        version_id=row["version_id"],
+        tenant_id=row["tenant_id"],
+        title=row["title"],
+        text=row["text"],
+        score=float(item["score"]),
+        chunk_index=row["chunk_index"],
+        source_type=row["source_type"],
+        trust_level=row["trust_level"],
+        visibility=row["visibility"],
+        semantic_score=(
+            float(item["semantic_score"]) if "semantic_score" in item else None
+        ),
+        lexical_score=float(item["lexical_score"]) if "lexical_score" in item else None,
+    )
+
+
+def _cosine_similarity(
+    left: tuple[float, ...] | None,
+    right: tuple[float, ...] | None,
+) -> float | None:
+    if left is None or right is None or len(left) != len(right):
+        return None
+    left_norm = math.sqrt(sum(value * value for value in left))
+    right_norm = math.sqrt(sum(value * value for value in right))
+    if left_norm == 0 or right_norm == 0:
+        return None
+    return sum(a * b for a, b in zip(left, right, strict=True)) / (left_norm * right_norm)
+
+
+def _rank_in_memory_results(
+    results: list[MemorySearchResultDTO],
+    retrieval_mode: str,
+    limit: int,
+) -> list[MemorySearchResultDTO]:
+    semantic_results = sorted(
+        (item for item in results if item.semantic_score is not None),
+        key=lambda item: (-float(item.semantic_score), item.document_id, item.chunk_index),
+    )
+    lexical_results = sorted(
+        (item for item in results if item.lexical_score is not None),
+        key=lambda item: (-float(item.lexical_score), item.document_id, item.chunk_index),
+    )
+    scores: dict[str, float] = {}
+    candidates: dict[str, MemorySearchResultDTO] = {}
+    ranked_lists = []
+    if retrieval_mode in {"hybrid", "semantic"}:
+        ranked_lists.append(semantic_results)
+    if retrieval_mode in {"hybrid", "lexical"}:
+        ranked_lists.append(lexical_results)
+    for ranked in ranked_lists:
+        for rank, item in enumerate(ranked, start=1):
+            candidates.setdefault(item.chunk_id, item)
+            scores[item.chunk_id] = scores.get(item.chunk_id, 0.0) + 1.0 / (60 + rank)
+    fused = [replace(item, score=scores[chunk_id]) for chunk_id, item in candidates.items()]
+    fused.sort(key=lambda item: (-item.score, item.document_id, item.chunk_index))
+    return fused[:limit]

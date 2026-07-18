@@ -16,3 +16,11 @@ class DocumentAlreadyExistsError(MemoryError):
 
 class ConcurrentModificationError(MemoryError):
     """Raised when an aggregate was changed after it was loaded."""
+
+
+class EmbeddingError(MemoryError):
+    """Raised when embedding generation fails or returns invalid data."""
+
+
+class EmbeddingConfigurationError(EmbeddingError):
+    """Raised when the embedding provider is misconfigured."""

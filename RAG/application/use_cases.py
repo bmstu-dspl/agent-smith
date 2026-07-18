@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import replace
+import math
+
+from RAG._embedding_constants import EMBEDDING_DIMENSIONS
 from RAG._domain import Chunk, Document, DocumentVersion, SourceMetadata
-from RAG._errors import DocumentAlreadyExistsError, DocumentNotFoundError
+from RAG._errors import DocumentAlreadyExistsError, DocumentNotFoundError, EmbeddingConfigurationError
 from RAG.application.chunking import ChunkingConfig, TextChunker
 from RAG.application.mappers import (
     to_chunk_dto,
@@ -10,7 +14,7 @@ from RAG.application.mappers import (
     to_document_list_item_dto,
     to_version_dto,
 )
-from RAG.application.ports import Clock, DocumentStore
+from RAG.application.ports import Clock, DocumentStore, EmbeddingProvider
 from RAG.application.ports import PublishedMemorySearchStore
 from RAG.types import (
     AddDocumentVersionCommand,
@@ -37,6 +41,7 @@ from RAG.types import (
     PublishVersionCommand,
     RejectVersionCommand,
     SearchPublishedMemoryQuery,
+    VectorizeVersionCommand,
 )
 
 
@@ -94,22 +99,38 @@ class AddDocumentVersionUseCase:
 
 
 class MarkVersionProcessedUseCase:
-    def __init__(self, store: DocumentStore, clock: Clock) -> None:
+    def __init__(
+        self,
+        store: DocumentStore,
+        clock: Clock,
+        embedding_provider: EmbeddingProvider | None = None,
+    ) -> None:
         self._store = store
         self._clock = clock
+        self._embedding_provider = embedding_provider
 
     def execute(self, command: MarkVersionProcessedCommand) -> DocumentVersionDTO:
         document = _load_document(self._store, command.tenant_id, command.document_id)
         version = document.get_version(command.version_id)
-        version.mark_processed(_to_chunks(command.tenant_id, command.version_id, command.chunks), self._clock())
+        now = self._clock()
+        chunks = _to_chunks(command.tenant_id, command.version_id, command.chunks)
+        if self._embedding_provider is not None:
+            chunks = _vectorize_chunks(chunks, self._embedding_provider, now)
+        version.mark_processed(chunks, now)
         self._store.save(document)
         return to_version_dto(version)
 
 
 class IngestTextDocumentUseCase:
-    def __init__(self, store: DocumentStore, clock: Clock) -> None:
+    def __init__(
+        self,
+        store: DocumentStore,
+        clock: Clock,
+        embedding_provider: EmbeddingProvider | None = None,
+    ) -> None:
         self._store = store
         self._clock = clock
+        self._embedding_provider = embedding_provider
 
     def execute(self, command: IngestTextDocumentCommand) -> IngestTextDocumentResultDTO:
         now = self._clock()
@@ -155,7 +176,10 @@ class IngestTextDocumentUseCase:
             text=command.raw_text,
             visibility=command.chunk_visibility,
         )
-        version.mark_processed(_to_chunks(command.tenant_id, command.version_id, chunk_inputs), now)
+        chunks = _to_chunks(command.tenant_id, command.version_id, chunk_inputs)
+        if self._embedding_provider is not None:
+            chunks = _vectorize_chunks(chunks, self._embedding_provider, now)
+        version.mark_processed(chunks, now)
         document.add_version(version, now)
         self._store.save(document)
 
@@ -271,11 +295,35 @@ class GetVersionChunksUseCase:
         return tuple(to_chunk_dto(chunk) for chunk in version.chunks)
 
 
+class VectorizeVersionUseCase:
+    def __init__(self, store: DocumentStore, clock: Clock, provider: EmbeddingProvider) -> None:
+        self._store = store
+        self._clock = clock
+        self._provider = provider
+
+    def execute(self, command: VectorizeVersionCommand) -> tuple[ChunkDTO, ...]:
+        document = _load_document(self._store, command.tenant_id, command.document_id)
+        version = document.get_version(command.version_id)
+        if not version.chunks:
+            raise EmbeddingConfigurationError("version has no chunks to vectorize")
+        now = self._clock()
+        chunks = _vectorize_chunks(version.chunks, self._provider, now)
+        document.vectorize_version(command.version_id, chunks, now)
+        self._store.save(document)
+        return tuple(to_chunk_dto(chunk) for chunk in version.chunks)
+
+
 class SearchPublishedMemoryUseCase:
-    def __init__(self, search_store: PublishedMemorySearchStore) -> None:
+    def __init__(
+        self,
+        search_store: PublishedMemorySearchStore,
+        embedding_provider: EmbeddingProvider | None = None,
+    ) -> None:
         self._search_store = search_store
+        self._embedding_provider = embedding_provider
 
     def execute(self, query: SearchPublishedMemoryQuery) -> tuple[MemorySearchResultDTO, ...]:
+        query_embedding = _query_embedding(self._embedding_provider, query.query, query.retrieval_mode)
         return tuple(
             self._search_store.search_published(
                 query.tenant_id,
@@ -283,15 +331,26 @@ class SearchPublishedMemoryUseCase:
                 limit=query.limit,
                 source_type=query.source_type,
                 visibility=query.visibility,
+                query_embedding=query_embedding,
+                query_embedding_model=(
+                    self._embedding_provider.model if query_embedding is not None else None
+                ),
+                retrieval_mode=query.retrieval_mode,
             )
         )
 
 
 class BuildAgentContextUseCase:
-    def __init__(self, search_store: PublishedMemorySearchStore) -> None:
+    def __init__(
+        self,
+        search_store: PublishedMemorySearchStore,
+        embedding_provider: EmbeddingProvider | None = None,
+    ) -> None:
         self._search_store = search_store
+        self._embedding_provider = embedding_provider
 
     def execute(self, query: BuildAgentContextQuery) -> AgentContextDTO:
+        query_embedding = _query_embedding(self._embedding_provider, query.query, query.retrieval_mode)
         results = tuple(
             self._search_store.search_published(
                 query.tenant_id,
@@ -299,6 +358,11 @@ class BuildAgentContextUseCase:
                 limit=query.limit,
                 source_type=query.source_type,
                 visibility=query.visibility,
+                query_embedding=query_embedding,
+                query_embedding_model=(
+                    self._embedding_provider.model if query_embedding is not None else None
+                ),
+                retrieval_mode=query.retrieval_mode,
             )
         )
         context_text, included_results = _build_bounded_context(results, query.max_context_chars)
@@ -323,9 +387,63 @@ def _to_chunks(tenant_id: str, version_id: str, chunks: tuple[ChunkInput, ...]) 
             start_byte=item.start_byte,
             end_byte=item.end_byte,
             visibility=item.visibility,
+            embedding=item.embedding,
+            embedding_model=item.embedding_model,
+            embedded_at=item.embedded_at,
         )
         for item in chunks
     ]
+
+
+def _vectorize_chunks(
+    chunks: list[Chunk],
+    provider: EmbeddingProvider,
+    now,
+) -> list[Chunk]:
+    vectors = provider.embed_documents(tuple(chunk.text for chunk in chunks))
+    if len(vectors) != len(chunks):
+        raise EmbeddingConfigurationError("embedding count does not match chunk count")
+    vectors = tuple(_validate_provider_vector(vector, provider) for vector in vectors)
+    return [
+        replace(
+            chunk,
+            embedding=vector,
+            embedding_model=provider.model,
+            embedded_at=now,
+        )
+        for chunk, vector in zip(chunks, vectors, strict=True)
+    ]
+
+
+def _query_embedding(
+    provider: EmbeddingProvider | None,
+    query: str,
+    retrieval_mode: str,
+) -> tuple[float, ...] | None:
+    if retrieval_mode == "lexical":
+        return None
+    if provider is None:
+        if retrieval_mode == "semantic":
+            raise EmbeddingConfigurationError("semantic retrieval requires an embedding provider")
+        return None
+    return _validate_provider_vector(provider.embed_query(query), provider)
+
+
+def _validate_provider_vector(
+    vector: tuple[float, ...],
+    provider: EmbeddingProvider,
+) -> tuple[float, ...]:
+    if provider.dimensions != EMBEDDING_DIMENSIONS:
+        raise EmbeddingConfigurationError(
+            f"embedding provider dimensions must be {EMBEDDING_DIMENSIONS}"
+        )
+    if len(vector) != provider.dimensions:
+        raise EmbeddingConfigurationError("embedding vector has unexpected dimensions")
+    if not all(math.isfinite(value) for value in vector):
+        raise EmbeddingConfigurationError("embedding vector contains a non-finite value")
+    if not any(value != 0 for value in vector):
+        raise EmbeddingConfigurationError("embedding vector must not be zero")
+    return vector
 
 
 def _build_bounded_context(

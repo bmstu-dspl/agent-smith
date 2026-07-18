@@ -15,20 +15,132 @@ from RAG import (
     DeleteVersionCommand,
     DocumentAlreadyExistsError,
     DocumentNotFoundError,
+    EmbeddingConfigurationError,
     GetDocumentQuery,
     GetVersionChunksQuery,
     InMemoryDocumentStore,
     IngestTextDocumentCommand,
     ListDocumentsQuery,
     MarkVersionProcessedCommand,
+    MemorySearchResultDTO,
     PublishVersionCommand,
     RejectVersionCommand,
     SearchPublishedMemoryQuery,
+    ValidationError,
+    VectorizeVersionCommand,
 )
+from RAG._repository import _rank_in_memory_results
 from RAG.application import MemoryUseCases
 
 
 class MemoryUseCasesTestCase(TestCase):
+    def test_ingestion_and_semantic_search_use_embeddings(self) -> None:
+        now = datetime(2026, 7, 4, 12, 0, 0, tzinfo=timezone.utc)
+        provider = _FakeEmbeddingProvider()
+        use_cases = MemoryUseCases(
+            InMemoryDocumentStore(),
+            embedding_provider=provider,
+            now_provider=lambda: now,
+        )
+        self._create_published_document(use_cases)
+
+        chunks = use_cases.get_version_chunks(GetVersionChunksQuery("tenant-1", "doc-1", "ver-1"))
+        self.assertTrue(chunks[0].is_embedded)
+        self.assertEqual(chunks[0].embedding_model, "test-embedding")
+
+        results = use_cases.search_published_memory(
+            SearchPublishedMemoryQuery(
+                "tenant-1",
+                "semantically related but lexically absent",
+                retrieval_mode="semantic",
+            )
+        )
+        self.assertEqual([result.chunk_id for result in results], ["chunk-1"])
+        self.assertIsNotNone(results[0].semantic_score)
+
+    def test_vectorize_version_backfills_legacy_chunks(self) -> None:
+        now = datetime(2026, 7, 4, 12, 0, 0, tzinfo=timezone.utc)
+        store = InMemoryDocumentStore()
+        legacy = MemoryUseCases(store, now_provider=lambda: now)
+        self._create_published_document(legacy)
+        self.assertFalse(
+            legacy.get_version_chunks(GetVersionChunksQuery("tenant-1", "doc-1", "ver-1"))[0].is_embedded
+        )
+
+        vectorized = MemoryUseCases(
+            store,
+            embedding_provider=_FakeEmbeddingProvider(),
+            now_provider=lambda: now,
+        ).vectorize_version(VectorizeVersionCommand("doc-1", "ver-1", "tenant-1"))
+        self.assertTrue(vectorized[0].is_embedded)
+
+    def test_vectorize_version_updates_timestamps_and_rejects_archived_version(self) -> None:
+        created_at = datetime(2026, 7, 4, 12, 0, 0, tzinfo=timezone.utc)
+        vectorized_at = datetime(2026, 7, 4, 13, 0, 0, tzinfo=timezone.utc)
+        store = InMemoryDocumentStore()
+        legacy = MemoryUseCases(store, now_provider=lambda: created_at)
+        self._create_published_document(legacy)
+
+        vectorizer = MemoryUseCases(
+            store,
+            embedding_provider=_FakeEmbeddingProvider(),
+            now_provider=lambda: vectorized_at,
+        )
+        vectorizer.vectorize_version(VectorizeVersionCommand("doc-1", "ver-1", "tenant-1"))
+        stored = store.get("tenant-1", "doc-1")
+        assert stored is not None
+        self.assertEqual(stored.updated_at, vectorized_at)
+        self.assertEqual(stored.versions["ver-1"].updated_at, vectorized_at)
+
+        vectorizer.archive_version(ArchiveVersionCommand("doc-1", "ver-1", "tenant-1"))
+        with self.assertRaises(ValidationError):
+            vectorizer.vectorize_version(VectorizeVersionCommand("doc-1", "ver-1", "tenant-1"))
+
+    def test_semantic_search_rejects_invalid_query_vector(self) -> None:
+        now = datetime(2026, 7, 4, 12, 0, 0, tzinfo=timezone.utc)
+        store = InMemoryDocumentStore()
+        self._create_published_document(MemoryUseCases(store, now_provider=lambda: now))
+        use_cases = MemoryUseCases(store, embedding_provider=_InvalidQueryEmbeddingProvider())
+
+        with self.assertRaisesRegex(
+            EmbeddingConfigurationError,
+            "unexpected dimensions",
+        ):
+            use_cases.search_published_memory(
+                SearchPublishedMemoryQuery("tenant-1", "query", retrieval_mode="semantic")
+            )
+
+    def test_in_memory_hybrid_ranking_uses_rrf(self) -> None:
+        common = {
+            "version_id": "ver-1",
+            "tenant_id": "tenant-1",
+            "title": "Title",
+            "text": "Text",
+            "score": 0.0,
+            "chunk_index": 0,
+            "source_type": "text",
+            "trust_level": "trusted",
+            "visibility": "tenant",
+        }
+        both = MemorySearchResultDTO(
+            chunk_id="both",
+            document_id="doc-a",
+            semantic_score=0.1,
+            lexical_score=1.0,
+            **common,
+        )
+        semantic_only = MemorySearchResultDTO(
+            chunk_id="semantic",
+            document_id="doc-b",
+            semantic_score=0.9,
+            lexical_score=None,
+            **common,
+        )
+
+        ranked = _rank_in_memory_results([both, semantic_only], "hybrid", 2)
+
+        self.assertEqual([item.chunk_id for item in ranked], ["both", "semantic"])
+
     def test_ingest_text_document_creates_processed_version_and_chunks(self) -> None:
         now = datetime(2026, 7, 8, 12, 0, 0, tzinfo=timezone.utc)
         use_cases = MemoryUseCases(InMemoryDocumentStore(), now_provider=lambda: now)
@@ -285,3 +397,19 @@ class MemoryUseCasesTestCase(TestCase):
         )
         use_cases.approve_version(ApproveVersionCommand("doc-1", "ver-1", "tenant-1"))
         use_cases.publish_version(PublishVersionCommand("doc-1", "ver-1", "tenant-1"))
+
+
+class _FakeEmbeddingProvider:
+    model = "test-embedding"
+    dimensions = 1536
+
+    def embed_documents(self, texts: tuple[str, ...]) -> tuple[tuple[float, ...], ...]:
+        return tuple((1.0,) + (0.0,) * 1535 for _ in texts)
+
+    def embed_query(self, text: str) -> tuple[float, ...]:
+        return (1.0,) + (0.0,) * 1535
+
+
+class _InvalidQueryEmbeddingProvider(_FakeEmbeddingProvider):
+    def embed_query(self, text: str) -> tuple[float, ...]:
+        return (1.0,)
