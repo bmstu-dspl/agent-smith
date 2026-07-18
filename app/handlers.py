@@ -7,7 +7,9 @@ from datetime import datetime, timezone
 import httpx
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -17,29 +19,383 @@ from aiogram.types import (
 
 from app.middleware.session_middleware import SessionMiddleware
 from app.models import IncomingMessage
+from app.escalation_service import EscalationService
+
+# Импортируем конфигурацию
+from config import MANAGER_GROUP_ID, AI_AGENT_URL
 
 router = Router()
 router.message.middleware(SessionMiddleware())
 
 logger = logging.getLogger(__name__)
 
-AI_CORE_URL = os.getenv('AI_AGENT_URL', 'http://ai_agent:8000') + "/agent/process"
+# Глобальная переменная для сервиса эскалации
+_esc_service: EscalationService = None
 
+
+# Определяем состояния
+class UserStates(StatesGroup):
+    """Состояния пользователя"""
+    default = State()  # Обычный режим (AI)
+    with_manager = State()  # Режим общения с менеджером
+
+
+def set_esc_service(service: EscalationService):
+    """Установить сервис эскалации"""
+    global _esc_service
+    _esc_service = service
+    logger.info(f"Escalation service set: {service}")
+
+
+def get_esc_service():
+    """Получить сервис эскалации"""
+    return _esc_service
+
+
+def escape_markdown(text: str) -> str:
+    """Экранирует специальные символы для Markdown"""
+    special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    for char in special_chars:
+        text = text.replace(char, f'\\{char}')
+    return text
+
+
+# ==================== КОМАНДЫ ДЛЯ ПОЛЬЗОВАТЕЛЕЙ ====================
 
 @router.message(Command("start"))
-async def cmd_start(message: Message):
+async def cmd_start(message: Message, state: FSMContext):
+    """Команда /start - сброс состояния"""
+    await state.set_state(UserStates.default)
     await message.answer(
-        "Привет!\n\n"
-        "Просто отправь мне любое сообщение, и я передам его AI агенту.\n"
+        "Привет! Я ИИ-помощник.\n\n"
+        "Просто отправь мне сообщение, и я помогу с решением задачи.\n"
+        "Если нужна помощь специалиста, отправь команду /help"
     )
 
 
-@router.message(F.text)
-async def handle_message(message: Message, session_id: str = None, user_metadata: dict = None):
+@router.message(Command("help"))
+async def cmd_help(message: Message, state: FSMContext):
+    """Команда для вызова менеджера"""
+    esc_service = get_esc_service()
+    
+    if esc_service is None:
+        await message.answer(
+            "Сервис поддержки временно недоступен. Попробуйте позже."
+        )
+        return
+    
+    # Проверяем, есть ли уже активная эскалация
+    if message.from_user.id in esc_service.active_escalations:
+        escalation = esc_service.active_escalations[message.from_user.id]
+        if escalation["status"] in ["pending", "active"]:
+            await message.answer("У вас уже есть активный запрос к менеджеру.")
+            return
+    
+    # Создаем эскалацию
+    success = await esc_service.escalate_to_managers(
+        message,
+        reason="Пользователь запросил помощь через /help"
+    )
+    
+    if success:
+        # Переключаем пользователя в режим менеджера
+        await state.set_state(UserStates.with_manager)
+        logger.info(f"User {message.from_user.id} switched to with_manager state")
+    else:
+        await state.set_state(UserStates.default)
+
+
+@router.message(Command("end_help"))
+async def cmd_end_help(message: Message, state: FSMContext):
+    """Команда для завершения общения с менеджером"""
+    esc_service = get_esc_service()
+    
+    if esc_service:
+        # Закрываем эскалацию если она есть
+        if message.from_user.id in esc_service.active_escalations:
+            await esc_service.close_escalation(
+                message.from_user.id, 
+                "закрыт пользователем через /end_help"
+            )
+            await message.answer(
+                "Диалог с менеджером завершен. Вы снова можете общаться с AI-помощником."
+            )
+        else:
+            await message.answer("У вас нет активного диалога с менеджером.")
+    
+    await state.set_state(UserStates.default)
+
+
+@router.message(Command("test_escalation"))
+async def cmd_test_escalation(message: Message):
+    """Тестовая команда для проверки эскалации"""
+    esc_service = get_esc_service()
+    
+    if esc_service is None:
+        await message.answer("Escalation service is None")
+        return
+    
+    status = f"Escalation service status:\n"
+    status += f"is_initialized: {esc_service.is_initialized}\n"
+    status += f"manager_group_id: {esc_service.manager_group_id}\n"
+    status += f"active_escalations: {len(esc_service.active_escalations)}\n\n"
+    
+    # Показываем активные эскалации
+    if esc_service.active_escalations:
+        status += "Active requests:\n"
+        for user_id, esc in esc_service.active_escalations.items():
+            status += f"  • User {user_id}: {esc['status']} (thread: {esc.get('thread_id', 'None')})\n"
+    
+    await message.answer(status)
+
+
+@router.message(Command("my_status"))
+async def cmd_my_status(message: Message, state: FSMContext):
+    """Показывает текущий статус пользователя"""
+    current_state = await state.get_state()
+    esc_service = get_esc_service()
+    
+    status = f"Your status:\n"
+    status += f"State: {current_state or 'default'}\n\n"
+    
+    if esc_service and message.from_user.id in esc_service.active_escalations:
+        esc = esc_service.active_escalations[message.from_user.id]
+        status += f"Request to manager:\n"
+        status += f"  • Status: {esc['status']}\n"
+        status += f"  • Manager: {esc.get('manager_name', 'Not assigned')}\n"
+        status += f"  • Thread: {esc.get('thread_id', 'Not created')}\n"
+    else:
+        status += "No active requests to manager."
+    
+    await message.answer(status)
+
+
+# ==================== КОМАНДЫ ДЛЯ МЕНЕДЖЕРОВ ====================
+
+@router.message(Command("close_ticket"))
+async def cmd_close_ticket(message: Message):
+    """Закрывает текущий тикет (только для менеджеров в треде)"""
+    # Проверяем, что сообщение в треде
+    if not message.message_thread_id:
+        await message.reply("Эта команда доступна только в тредах.")
+        return
+    
+    esc_service = get_esc_service()
+    if esc_service is None:
+        await message.reply("Сервис недоступен.")
+        return
+    
+    thread_id = message.message_thread_id
+    user_id = esc_service.thread_users.get(thread_id)
+    
+    if not user_id:
+        await message.reply(f"Тред {thread_id} не привязан к пользователю.")
+        return
+    
+    if user_id not in esc_service.active_escalations:
+        await message.reply("Запрос уже закрыт.")
+        return
+    
+    # Закрываем запрос
+    await esc_service.close_escalation(
+        user_id, 
+        f"закрыт менеджером {message.from_user.full_name}"
+    )
+    
+    await message.reply(f"Диалог с пользователем {user_id} закрыт.")
+    
+    # Уведомляем пользователя
+    escalation = esc_service.active_escalations.get(user_id)
+    if escalation:
+        try:
+            await esc_service.bot.send_message(
+                chat_id=escalation["user_chat_id"],
+                text="Диалог с менеджером завершен."
+            )
+        except Exception as e:
+            logger.error(f"Не удалось уведомить пользователя: {e}")
+
+
+@router.message(Command("tickets_status"))
+async def cmd_tickets_status(message: Message):
+    """Показывает статус всех запросов (только для менеджеров)"""
+    esc_service = get_esc_service()
+    if esc_service is None:
+        await message.reply("Сервис недоступен.")
+        return
+    
+    status = await esc_service.get_manager_status()
+    await message.reply(status)
+
+
+@router.message(Command("check_links"))
+async def cmd_check_links(message: Message):
+    """Проверяет текущие связи между тредами и пользователями (для отладки)"""
+    esc_service = get_esc_service()
+    if esc_service is None:
+        await message.reply("Сервис недоступен.")
+        return
+    
+    status = "Current links:\n\n"
+    status += "user_threads:\n"
+    if esc_service.user_threads:
+        for user_id, thread_id in esc_service.user_threads.items():
+            status += f"  • User {user_id} -> Thread {thread_id}\n"
+    else:
+        status += "  • (empty)\n"
+    
+    status += "\nthread_users:\n"
+    if esc_service.thread_users:
+        for thread_id, user_id in esc_service.thread_users.items():
+            status += f"  • Thread {thread_id} -> User {user_id}\n"
+    else:
+        status += "  • (empty)\n"
+    
+    status += f"\nTotal links: {len(esc_service.thread_users)}"
+    
+    await message.reply(status)
+
+
+@router.message(Command("get_group_id"))
+async def cmd_get_group_id(message: Message):
+    """Получить ID текущей группы (только для администраторов)"""
+    if message.chat.type in ["group", "supergroup"]:
+        chat_id = message.chat.id
+        chat_title = message.chat.title or "Без названия"
+        
+        await message.answer(
+            f"Group info:\n"
+            f"Name: {chat_title}\n"
+            f"ID: {chat_id}\n\n"
+            f"Add this ID to .env as MANAGER_GROUP_ID"
+        )
+    else:
+        await message.answer("This command works only in groups.")
+
+
+# ==================== ОБРАБОТЧИК СООБЩЕНИЙ ИЗ ГРУППЫ МЕНЕДЖЕРОВ ====================
+
+@router.message(F.chat.id == MANAGER_GROUP_ID)
+async def handle_manager_message(message: Message):
     """
-    Принимает текстовое сообщение, отправляет в AI-ядро и стримит ответ,
-    редактируя сообщение в реальном времени.
+    Обрабатывает сообщения от менеджеров в группе.
+    - Сообщения в тредах пересылаются пользователям
+    - Сообщения в общем чате игнорируются (кроме команд)
     """
+    # Игнорируем команды
+    if message.text and message.text.startswith('/'):
+        return
+    
+    # Игнорируем сообщения от самого бота
+    bot_id = (await message.bot.me()).id
+    if message.from_user and message.from_user.id == bot_id:
+        logger.info(f"Игнорируем сообщение от бота в треде {message.message_thread_id}")
+        return
+    
+    # Проверяем, что сообщение в треде
+    if not message.message_thread_id:
+        await message.reply(
+            "Это сообщение не в треде.\n"
+            "Чтобы ответить пользователю, напишите сообщение в его треде.\n"
+            "Чтобы создать тред, нажмите 'Принять запрос' в общем чате."
+        )
+        return
+    
+    esc_service = get_esc_service()
+    if esc_service is None:
+        await message.reply("Сервис недоступен.")
+        return
+    
+    # Отладочная информация
+    logger.info(f"Получено сообщение из треда {message.message_thread_id}")
+    logger.info(f"Текущие связи thread_users: {esc_service.thread_users}")
+    
+    # Пересылаем сообщение пользователю
+    await esc_service.forward_message_to_user(message)
+
+
+# ==================== ОБРАБОТЧИКИ СООБЩЕНИЙ ОТ ПОЛЬЗОВАТЕЛЕЙ ====================
+
+# Обработчик сообщений от пользователей в режиме с менеджером
+@router.message(UserStates.with_manager, F.text)
+async def handle_user_with_manager(
+    message: Message, 
+    state: FSMContext,
+    session_id: str = None, 
+    user_metadata: dict = None
+):
+    """Обрабатывает сообщения от пользователя, когда он в режиме с менеджером"""
+    esc_service = get_esc_service()
+    
+    if esc_service is None:
+        await message.answer("Сервис недоступен. Переключаю в обычный режим.")
+        await state.set_state(UserStates.default)
+        return
+    
+    user_id = message.from_user.id
+    
+    # Проверяем, есть ли активная эскалация
+    if user_id not in esc_service.active_escalations:
+        await message.answer(
+            "У вас нет активного диалога с менеджером. Переключаю в обычный режим."
+        )
+        await state.set_state(UserStates.default)
+        return
+    
+    escalation = esc_service.active_escalations[user_id]
+    
+    if escalation["status"] != "active":
+        if escalation["status"] == "pending":
+            await message.answer(
+                "Ваш запрос еще не принят менеджером. Ожидайте ответа.\n"
+                "Если хотите отменить запрос, используйте /end_help"
+            )
+            return
+        elif escalation["status"] == "closed":
+            await message.answer(
+                "Ваш диалог с менеджером завершен. Переключаю в обычный режим."
+            )
+            await state.set_state(UserStates.default)
+            return
+    
+    # Пересылаем сообщение менеджеру (без лишних уведомлений)
+    try:
+        thread_id = escalation.get("thread_id")
+        safe_name = escape_markdown(escalation['user_full_name'])
+        
+        if thread_id:
+            # Отправляем в тред
+            await message.bot.send_message(
+                chat_id=MANAGER_GROUP_ID,
+                message_thread_id=thread_id,
+                text=f"{safe_name}:\n{message.text}"
+            )
+            logger.info(f"Сообщение от пользователя {user_id} переслано менеджеру в тред {thread_id}")
+        else:
+            # Если треда нет
+            await message.bot.send_message(
+                chat_id=MANAGER_GROUP_ID,
+                text=f"{safe_name}:\n{message.text}\n\n"
+                     f"Тред не создан! Менеджер должен принять запрос."
+            )
+            logger.warning(f"Нет треда для пользователя {user_id}")
+        
+    except Exception as e:
+        logger.error(f"Ошибка при пересылке сообщения менеджеру: {e}")
+        await message.answer("Не удалось отправить сообщение менеджеру. Попробуйте позже.")
+
+
+# Обработчик сообщений от пользователей в обычном режиме (AI)
+@router.message(UserStates.default, F.text)
+async def handle_user_default(
+    message: Message, 
+    state: FSMContext,
+    session_id: str = None, 
+    user_metadata: dict = None
+):
+    """Обрабатывает сообщения от пользователя в обычном режиме (AI)"""
+    
+    # Обработка AI-агентом
     incoming = IncomingMessage(
         session_id=session_id or f"temp_{message.from_user.id}",
         user_message=message.text,
@@ -58,7 +414,7 @@ async def handle_message(message: Message, session_id: str = None, user_metadata
         async with httpx.AsyncClient(timeout=60.0) as client:
             async with client.stream(
                 "POST",
-                AI_CORE_URL,
+                AI_AGENT_URL + "/agent/process",
                 json=incoming.model_dump(mode="json")
             ) as response:
                 response.raise_for_status()
@@ -127,12 +483,77 @@ async def handle_message(message: Message, session_id: str = None, user_metadata
             pass
 
 
+# ==================== ОБРАБОТЧИКИ CALLBACK ====================
+
+@router.callback_query(F.data.startswith("take_ticket_"))
+async def handle_take_ticket(callback: CallbackQuery, state: FSMContext):
+    """Обработчик принятия запроса менеджером"""
+    esc_service = get_esc_service()
+    if esc_service is None:
+        await callback.answer("Сервис недоступен")
+        return
+    
+    user_id = int(callback.data.split("_")[2])
+    logger.info(f"Менеджер {callback.from_user.id} принимает запрос от пользователя {user_id}")
+    
+    success = await esc_service.take_ticket(callback, user_id)
+    
+    if success:
+        # Переключаем пользователя в режим с менеджером
+        await state.set_state(UserStates.with_manager)
+        logger.info(f"User {user_id} switched to with_manager state by manager")
+        
+        # Отправляем уведомление в тред
+        escalation = esc_service.active_escalations.get(user_id)
+        if escalation and escalation.get("thread_id"):
+            try:
+                safe_name = escape_markdown(escalation['user_full_name'])
+                await callback.bot.send_message(
+                    chat_id=MANAGER_GROUP_ID,
+                    message_thread_id=escalation["thread_id"],
+                    text=(
+                        f"Начинаем общение с пользователем {safe_name}.\n\n"
+                        f"Инструкция:\n"
+                        f"- Все сообщения в этом треде будут пересылаться пользователю.\n"
+                        f"- Для завершения диалога используйте /close_ticket\n"
+                        f"- Для просмотра всех запросов используйте /tickets_status"
+                    )
+                )
+                logger.info(f"Отправлено приветствие в тред {escalation['thread_id']}")
+            except Exception as e:
+                logger.error(f"Ошибка при отправке приветствия в тред: {e}")
+        
+        await callback.answer("Запрос принят, тред создан")
+    else:
+        await callback.answer("Не удалось принять запрос")
+
+
+@router.callback_query(F.data.startswith("reject_ticket_"))
+async def handle_reject_ticket(callback: CallbackQuery):
+    """Обработчик отклонения запроса менеджером"""
+    esc_service = get_esc_service()
+    if esc_service is None:
+        await callback.answer("Сервис недоступен")
+        return
+    
+    user_id = int(callback.data.split("_")[2])
+    logger.info(f"Менеджер {callback.from_user.id} отклоняет запрос от пользователя {user_id}")
+    
+    await esc_service.reject_ticket(callback, user_id)
+
+
 @router.callback_query(F.data)
-async def handle_callback_query(callback: CallbackQuery, session_id: str = None, user_metadata: dict = None):
-    """
-    Универсальный обработчик нажатий на кнопки.
-    Отправляет callback_data в AI-ядро и возвращает ответ.
-    """
+async def handle_callback_query(
+    callback: CallbackQuery, 
+    state: FSMContext,
+    session_id: str = None, 
+    user_metadata: dict = None
+):
+    """Универсальный обработчик нажатий на кнопки (не из эскалации)"""
+    # Проверяем, не является ли это callback от эскалации (уже обработано выше)
+    if callback.data.startswith("take_ticket_") or callback.data.startswith("reject_ticket_"):
+        return
+    
     callback_data = callback.data
     user_id = callback.from_user.id
     chat_id = callback.message.chat.id
@@ -153,8 +574,6 @@ async def handle_callback_query(callback: CallbackQuery, session_id: str = None,
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            # Отправляем callback_data как обычное сообщение с специальным маркером
-            # или добавляем в metadata информацию о том, что это callback
             payload = {
                 "session_id": session_id or f"temp_{user_id}",
                 "user_message": callback_data,
@@ -175,7 +594,7 @@ async def handle_callback_query(callback: CallbackQuery, session_id: str = None,
 
             async with client.stream(
                 "POST",
-                AI_CORE_URL,  # Используем тот же эндпоинт
+                AI_AGENT_URL + "/agent/process",
                 json=payload
             ) as response:
                 response.raise_for_status()
@@ -243,7 +662,7 @@ async def handle_callback_query(callback: CallbackQuery, session_id: str = None,
 
     except httpx.TimeoutException:
         logger.error("Таймаут при обработке callback")
-        await sent_message.edit_text("⏱️ Превышено время ожидания ответа от сервера.")
+        await sent_message.edit_text("Превышено время ожидания ответа от сервера.")
     except httpx.HTTPStatusError as e:
         status_code = e.response.status_code
         logger.error(f"Ошибка HTTP при обработке callback: статус {status_code}")
@@ -262,6 +681,14 @@ async def handle_callback_query(callback: CallbackQuery, session_id: str = None,
             pass
 
 
+# ==================== ОБРАБОТЧИК ДЛЯ ОСТАЛЬНЫХ СООБЩЕНИЙ ====================
+
 @router.message()
-async def handle_other_messages(message: Message):
-    await message.answer("Пожалуйста, отправьте текстовое сообщение.")
+async def handle_other_messages(message: Message, state: FSMContext):
+    """Обрабатывает все остальные сообщения (не текст)"""
+    if message.chat.type == "private":
+        current_state = await state.get_state()
+        if current_state == UserStates.with_manager:
+            await message.answer("Пожалуйста, отправьте текстовое сообщение менеджеру.")
+        else:
+            await message.answer("Пожалуйста, отправьте текстовое сообщение.")

@@ -2,23 +2,75 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).parent))
 
 from aiogram import Bot, Dispatcher
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.types import WebhookInfo
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 
-from app.handlers import router
+from app.handlers import router, set_esc_service, get_esc_service
+from app.escalation_service import EscalationService
+from app.middleware.session_middleware import SessionMiddleware
 from app_runtime import AppRuntime
-from config import BOT_TOKEN
+from config import (
+    BOT_TOKEN, 
+    MANAGER_GROUP_ID, 
+    WEBHOOK_URL, 
+    WEBHOOK_PATH, 
+    PORT,
+    LOG_LEVEL,
+    REDIS_URL
+)
 
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
+# Настройка логирования ДО попытки импорта Redis
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Пытаемся импортировать Redis
+try:
+    from redis.asyncio import Redis
+    REDIS_AVAILABLE = True
+    logger.info("Redis module loaded successfully")
+except ImportError as e:
+    REDIS_AVAILABLE = False
+    logger.warning(f"Redis not available: {e}, using in-memory storage")
+
+# Глобальные переменные
+redis_client = None
 runtime: AppRuntime | None = None
+bot_instance: Bot | None = None
 
-WEBHOOK_HOST = os.environ["WEBHOOK_HOST"].rstrip("/")
-WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
-WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
-PORT = int(os.getenv("PORT", "8080"))
+
+async def setup_redis():
+    """Инициализация Redis (если доступен)"""
+    global redis_client
+    
+    if not REDIS_AVAILABLE:
+        logger.warning("Redis module not installed, using in-memory storage")
+        return None
+    
+    try:
+        redis_client = Redis.from_url(
+            REDIS_URL,
+            decode_responses=False,
+            max_connections=20
+        )
+        await redis_client.ping()
+        logger.info(f"Redis connected: {REDIS_URL}")
+        return redis_client
+    except Exception as e:
+        logger.error(f"Redis connection failed: {e}")
+        logger.warning("Falling back to in-memory storage")
+        return None
 
 
 def _env_bool(name: str, *, default: bool = False) -> bool:
@@ -29,34 +81,166 @@ def _env_bool(name: str, *, default: bool = False) -> bool:
 
 
 async def on_startup(dispatcher: Dispatcher) -> None:
-    global runtime
-
-    runtime = AppRuntime.from_env()
-    dispatcher["runtime"] = runtime
-    dispatcher["memory"] = runtime.memory
-
-    webhook_info = await bot.get_webhook_info()
-    if webhook_info.url != WEBHOOK_URL:
-        await bot.set_webhook(
-            url=WEBHOOK_URL,
-            allowed_updates=dispatcher.resolve_used_update_types(),
-            drop_pending_updates=_env_bool("DROP_PENDING_UPDATES"),
-        )
-        logging.info("Telegram webhook configured")
+    """Действия при запуске бота"""
+    global redis_client, runtime, bot_instance
+    
+    logger.info("=" * 50)
+    logger.info("ON_STARTUP CALLED!")
+    logger.info("=" * 50)
+    
+    # Получаем бота из данных диспетчера или используем глобальный
+    bot = dispatcher.workflow_data.get('bot')
+    if bot is None:
+        bot = bot_instance
+    if bot is None:
+        logger.error("Bot instance not found!")
+        return
+    
+    # Инициализация Redis
+    redis_client = await setup_redis()
+    
+    # Настройка FSM с Redis (если доступен)
+    if redis_client:
+        try:
+            from aiogram.fsm.storage.redis import RedisStorage
+            storage = RedisStorage(redis_client)
+            dispatcher.storage = storage
+            logger.info("Redis FSM storage configured")
+        except ImportError as e:
+            logger.warning(f"RedisStorage not available: {e}, using in-memory")
+        except Exception as e:
+            logger.error(f"Failed to configure Redis storage: {e}")
+    
+    # Инициализация runtime
+    try:
+        runtime = AppRuntime.from_env()
+        dispatcher["runtime"] = runtime
+        dispatcher["memory"] = runtime.memory
+        logger.info("Runtime initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize runtime: {e}")
+    
+    # Настройка SessionMiddleware с Redis (если доступен)
+    session_middleware = SessionMiddleware(redis_client)
+    
+    # Удаляем старый middleware если есть
+    try:
+        for i, (mw, _) in enumerate(dispatcher.message.middleware._middlewares):
+            if isinstance(mw, SessionMiddleware):
+                dispatcher.message.middleware._middlewares.pop(i)
+                break
+    except Exception as e:
+        logger.debug(f"No existing SessionMiddleware to remove: {e}")
+    
+    dispatcher.message.middleware(session_middleware)
+    
+    # Также добавляем для callback_query
+    if hasattr(dispatcher, 'callback_query'):
+        try:
+            for i, (mw, _) in enumerate(dispatcher.callback_query.middleware._middlewares):
+                if isinstance(mw, SessionMiddleware):
+                    dispatcher.callback_query.middleware._middlewares.pop(i)
+                    break
+            dispatcher.callback_query.middleware(session_middleware)
+        except Exception as e:
+            logger.debug(f"Could not set middleware for callback_query: {e}")
+    
+    logger.info("SessionMiddleware configured")
+    
+    # Инициализация сервиса эскалации
+    if MANAGER_GROUP_ID:
+        try:
+            esc_service = EscalationService(bot, MANAGER_GROUP_ID)
+            set_esc_service(esc_service)
+            
+            # Проверяем, что сервис действительно установлен
+            test_service = get_esc_service()
+            if test_service:
+                logger.info(f"Escalation service configured and verified")
+                logger.info(f"   is_initialized: {test_service.is_initialized}")
+                logger.info(f"   manager_group_id: {test_service.manager_group_id}")
+            else:
+                logger.error("Failed to verify escalation service")
+            
+            logger.info(f"Escalation service initialized with group ID: {MANAGER_GROUP_ID}")
+        except Exception as e:
+            logger.error(f"Failed to initialize escalation service: {e}", exc_info=True)
     else:
-        logging.info("Telegram webhook already configured")
+        logger.warning("MANAGER_GROUP_ID not set! Escalation service disabled.")
+        logger.warning("Please add MANAGER_GROUP_ID to .env file")
+    
+    # Настройка вебхука
+    try:
+        webhook_info = await bot.get_webhook_info()
+        logger.info(f"Current webhook info: {webhook_info}")
+        
+        if webhook_info.url != WEBHOOK_URL:
+            await bot.set_webhook(
+                url=WEBHOOK_URL,
+                allowed_updates=dispatcher.resolve_used_update_types(),
+                drop_pending_updates=_env_bool("DROP_PENDING_UPDATES"),
+            )
+            logger.info(f"Webhook set to {WEBHOOK_URL}")
+        else:
+            logger.info(f"Webhook already set correctly to {WEBHOOK_URL}")
+            
+    except Exception as e:
+        logger.error(f"Failed to set webhook: {e}")
+        raise
+    
+    logger.info("=" * 50)
+    logger.info("BOT STARTED SUCCESSFULLY!")
+    logger.info("=" * 50)
 
 
-async def on_shutdown(_: Dispatcher) -> None:
-    global runtime
-
+async def on_shutdown(dispatcher: Dispatcher) -> None:
+    """Действия при остановке бота"""
+    global runtime, redis_client, bot_instance
+    
+    logger.info("=" * 50)
+    logger.info("ON_SHUTDOWN CALLED!")
+    logger.info("=" * 50)
+    
+    # Получаем бота
+    bot = dispatcher.workflow_data.get('bot')
+    if bot is None:
+        bot = bot_instance
+    
+    # Закрываем runtime
     if runtime is not None:
-        runtime.close()
-        runtime = None
-    if _env_bool("DELETE_WEBHOOK_ON_SHUTDOWN"):
-        await bot.delete_webhook()
-        logging.info("Telegram webhook deleted")
-    await bot.session.close()
+        try:
+            runtime.close()
+            runtime = None
+            logger.info("Runtime closed")
+        except Exception as e:
+            logger.error(f"Error closing runtime: {e}")
+    
+    # Закрываем Redis
+    if redis_client is not None:
+        try:
+            await redis_client.close()
+            redis_client = None
+            logger.info("Redis connection closed")
+        except Exception as e:
+            logger.error(f"Error closing Redis: {e}")
+    
+    # Удаляем вебхук
+    if bot:
+        if _env_bool("DELETE_WEBHOOK_ON_SHUTDOWN"):
+            try:
+                await bot.delete_webhook()
+                logger.info("Webhook deleted")
+            except Exception as e:
+                logger.error(f"Error deleting webhook: {e}")
+        
+        # Закрываем сессию бота
+        try:
+            await bot.session.close()
+            logger.info("Bot session closed")
+        except Exception as e:
+            logger.error(f"Error closing bot session: {e}")
+    
+    logger.info("Bot stopped successfully!")
 
 
 async def healthcheck(_: web.Request) -> web.Response:
@@ -71,22 +255,67 @@ async def healthcheck(_: web.Request) -> web.Response:
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=os.getenv("LOG_LEVEL", "INFO").upper(),
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
-    application = web.Application()
-    application.router.add_get("/healthz", healthcheck)
-    dp.include_router(router)
+    """Основная функция запуска бота"""
+    global bot_instance
+    
+    try:
+        # Создаем бота с правильными настройками
+        bot_instance = Bot(
+            token=BOT_TOKEN,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+        )
+        
+        # Создаем диспетчер
+        dp = Dispatcher()
+        
+        # Сохраняем бота в workflow_data
+        dp.workflow_data['bot'] = bot_instance
+        
+        # Регистрируем обработчики запуска и остановки
+        dp.startup.register(on_startup)
+        dp.shutdown.register(on_shutdown)
+        
+        # Подключаем роутеры
+        dp.include_router(router)
+        
+        # Создаем aiohttp приложение
+        app = web.Application()
+        app.router.add_get("/healthz", healthcheck)
+        
+        # Настраиваем обработчик вебхука
+        webhook_requests_handler = SimpleRequestHandler(
+            dispatcher=dp,
+            bot=bot_instance,
+        )
+        webhook_requests_handler.register(app, path=WEBHOOK_PATH)
+        
+        # ВАЖНО: используем setup_application для правильной инициализации
+        setup_application(app, dp, bot=bot_instance)
+        
+        # Запускаем сервер
+        logger.info("=" * 50)
+        logger.info(f"Starting webhook server on port {PORT}")
+        logger.info(f"Webhook URL: {WEBHOOK_URL}")
+        logger.info(f"Manager Group ID: {MANAGER_GROUP_ID or 'Not set'}")
+        logger.info(f"Redis: {'Enabled' if REDIS_AVAILABLE else 'Disabled (fallback to in-memory)'}")
+        logger.info("=" * 50)
+        
+        web.run_app(app, host="0.0.0.0", port=PORT)
+        
+    except KeyboardInterrupt:
+        logger.info("Server stopped by user")
+    except Exception as e:
+        logger.error(f"Server error: {e}")
+        raise
+    finally:
+        logger.info("Server shutdown complete")
 
-    webhook_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
-    webhook_handler.register(application, path=WEBHOOK_PATH)
-    dp.startup.register(on_startup)
-    dp.shutdown.register(on_shutdown)
 
-    logging.info("Starting webhook server on port %s", PORT)
-    web.run_app(application, host="0.0.0.0", port=PORT, print=None)
-
-
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    try:
+        main()
+    except KeyboardInterrupt:
+        print('\nBot stopped by user')
+    except Exception as e:
+        print(f'Fatal error: {e}')
+        sys.exit(1)
