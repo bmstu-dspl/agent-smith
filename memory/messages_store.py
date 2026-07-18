@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime, timezone
 
 from sqlalchemy import select, update
 
 from DB import PostgresDatabase
-
+from datetime import datetime, timedelta, timezone
 from ._models import MessageModel
 
 
@@ -142,3 +141,51 @@ class MessagesStore:
             is_final=False,
         )
     
+    async def get_handoff_history(
+        self, session_id: str, *, hours: int = 24, fallback_count: int = 20
+    ) -> list[dict]:
+        """История для передачи оператору: сообщения за последние `hours` часов;
+        если их меньше fallback_count — берутся последние fallback_count сообщений вне зависимости от времени."""
+        return await asyncio.to_thread(self._get_handoff_history, session_id, hours, fallback_count)
+
+    def _get_handoff_history(self, session_id: str, hours: int, fallback_count: int) -> list[dict]:
+        since = datetime.now(timezone.utc) - timedelta(hours=hours)
+        statement = (
+            select(
+                MessageModel.message_id,
+                MessageModel.role,
+                MessageModel.content,
+                MessageModel.created_at,
+            )
+            .where(
+                MessageModel.session_id == session_id,
+                MessageModel.is_active.is_(True),
+                MessageModel.is_final.is_(True),
+                MessageModel.created_at >= since,
+            )
+            .order_by(MessageModel.created_at.asc())
+        )
+        with self._db.session() as session:
+            rows = [dict(row) for row in session.execute(statement).mappings()]
+
+        if len(rows) >= fallback_count:
+            return rows
+
+        fallback_statement = (
+            select(
+                MessageModel.message_id,
+                MessageModel.role,
+                MessageModel.content,
+                MessageModel.created_at,
+            )
+            .where(
+                MessageModel.session_id == session_id,
+                MessageModel.is_active.is_(True),
+                MessageModel.is_final.is_(True),
+            )
+            .order_by(MessageModel.created_at.desc())
+            .limit(fallback_count)
+        )
+        with self._db.session() as session:
+            rows = [dict(row) for row in session.execute(fallback_statement).mappings()]
+        return list(reversed(rows))
