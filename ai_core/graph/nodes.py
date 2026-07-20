@@ -1,3 +1,4 @@
+import asyncio
 import json
 from typing import Literal
 
@@ -73,13 +74,15 @@ class RagRetrievalNode:
         )
         if not query:
             return {"rag_context": ""}
-        context = self.memory.build_agent_context(
-            BuildAgentContextQuery(
-                tenant_id=tenant_id,
-                query=query,
-                limit=8,
-                max_context_chars=12_000,
-            )
+        context_query = BuildAgentContextQuery(
+            tenant_id=tenant_id,
+            query=query,
+            limit=8,
+            max_context_chars=12_000,
+        )
+        context = await asyncio.to_thread(
+            self.memory.build_agent_context,
+            context_query,
         )
         return {
             "rag_context": context.context_text,
@@ -103,40 +106,46 @@ def _parse_tool_payload(content: object) -> dict:
 
 
 def tool_output_guard(state: AgentState) -> dict:
-    tool_messages = [
-        message
-        for message in state.get("messages", [])
-        if isinstance(message, ToolMessage)
-    ]
+    # ToolNode can execute several tool calls from one AIMessage. Only the
+    # contiguous ToolMessage suffix belongs to the current tools invocation;
+    # older ToolMessages in the conversation must not affect this decision.
+    tool_messages: list[ToolMessage] = []
+    for message in reversed(state.get("messages", [])):
+        if not isinstance(message, ToolMessage):
+            break
+        tool_messages.append(message)
+    tool_messages.reverse()
+
     if not tool_messages:
         return {}
 
-    payload = _parse_tool_payload(tool_messages[-1].content)
-    status = str(payload.get("status") or "").strip()
-    tool_result = json.dumps(payload, ensure_ascii=False)
+    payloads = [_parse_tool_payload(message.content) for message in tool_messages]
+    statuses = {str(payload.get("status") or "").strip() for payload in payloads}
+    serialized_result: object = payloads[0] if len(payloads) == 1 else {"results": payloads}
+    tool_result = json.dumps(serialized_result, ensure_ascii=False)
 
-    if status == "waiting_user":
+    if "waiting_user" in statuses:
         return {
             "blocked": True,
             "block_reason": "waiting_user",
             "tool_result": tool_result,
         }
 
-    if status == "handoff_requested":
+    if "invalid_tool_output" in statuses:
+        return {
+            "intent": "tool_error",
+            "tool_result": tool_result,
+        }
+
+    if "handoff_requested" in statuses:
         return {
             "intent": "handoff_to_operator",
             "tool_result": tool_result,
         }
 
-    if status == "completed":
+    if "completed" in statuses:
         return {
             "intent": "task_completed",
-            "tool_result": tool_result,
-        }
-
-    if status == "invalid_tool_output":
-        return {
-            "intent": "tool_error",
             "tool_result": tool_result,
         }
 

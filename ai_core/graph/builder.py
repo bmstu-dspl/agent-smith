@@ -105,7 +105,6 @@ def build_langgraph(llm, tool_registry: ToolRegistry, checkpointer=None, rag_mem
         workflow.add_edge("rag_retrieval", "agent")
     else:
         next_node_after_guard = "agent"
-
     workflow.add_edge(START, "input_guard")
 
     workflow.add_conditional_edges(
@@ -147,7 +146,7 @@ def build_langgraph(llm, tool_registry: ToolRegistry, checkpointer=None, rag_mem
 
 
 class AgentGraph(StubGraph):
-    def __init__(self, graph, llm, tool_registry: ToolRegistry) -> None:
+    def __init__(self, graph, tool_registry: ToolRegistry) -> None:
         self.graph = graph
         self.tool_registry = tool_registry
 
@@ -199,7 +198,7 @@ class AgentGraph(StubGraph):
                     tool_args = info["args"]
                     tool_result = _chunk_to_text(chunk)
 
-                    if tool_name == "ask_user" and on_ask_user is not None:
+                    if tool_name in {"ask_user", "request_clarification"} and on_ask_user is not None:
                         waiting_for_user = True
                         await on_ask_user(tool_args, tool_result)
 
@@ -217,4 +216,4 @@ def build_graph(checkpointer=None, tool_registry: ToolRegistry | None = None, ra
 
     registry = tool_registry or ToolRegistry()
     graph = build_langgraph(llm, registry, checkpointer=checkpointer, rag_memory=rag_memory)
-    return AgentGraph(graph, llm, registry)
+    return AgentGraph(graph, registry)
