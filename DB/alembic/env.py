@@ -11,6 +11,7 @@ from DB._graph_models import GraphEdgeModel, GraphNodeModel
 from DB._orm import Base
 from RAG._models import ChunkModel, DocumentModel, DocumentVersionModel
 from memory._models import MessageModel, SystemSettingModel
+from mcp_registry._models import McpServerModel
 _MODELS = (
     GraphNodeModel,
     GraphEdgeModel,
@@ -19,6 +20,7 @@ _MODELS = (
     ChunkModel,
     MessageModel,       
     SystemSettingModel,
+    McpServerModel,
 )
 target_metadata = Base.metadata
 

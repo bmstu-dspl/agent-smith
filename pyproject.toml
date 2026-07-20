@@ -20,7 +20,8 @@ dependencies = [
     "langgraph>=1.2.7",
     "uvicorn[standard]>=0.49.0",
     "langgraph-checkpoint-postgres>=3.1.0",
-    "aiogram[redis]>=3.29.0", 
-    "redis>=5.0.0",  
-    "aioredis>=2.0.0", 
+    "aiogram[redis]>=3.29.0",
+    "redis>=5.0.0",
+    "aioredis>=2.0.0",
+    "cryptography>=49.0.0",
 ]
