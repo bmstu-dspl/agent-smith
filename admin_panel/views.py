@@ -192,103 +192,33 @@ class BotConfigView(CustomView):
             return JSONResponse({"status": "error", "error": str(e)}, status_code=400)
 
 
-class PluginListView(CustomView):
-    """Список плагинов"""
-    
-    def __init__(self, storage: AdminStorage):
+class PluginDetailView(CustomView):
+    """Страница конфигурации встроенного компонента (RAG, AI Agent и т.п.)
+
+    В отличие от старой связки PluginListView + PluginConfigView(plugin_id),
+    каждый компонент теперь получает свой собственный фиксированный пункт
+    меню в админке, без промежуточного общего списка "Plugins".
+    """
+
+    def __init__(self, storage: AdminStorage, plugin_id: str, label: str, icon: str, path: str):
         super().__init__(
-            label="Plugins",
-            icon="puzzle-piece",
-            path="/plugins"
+            label=label,
+            icon=icon,
+            path=path
         )
         self.storage = storage
-    
-    async def render(self, request: Request, templates: Jinja2Templates) -> HTMLResponse:  # <-- ДОБАВЛЯЕМ templates
-        plugins = await self.storage.list_plugins()
-        registered = plugin_registry.list()
-        
-        html = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Plugins</title>
-            <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/css/bootstrap.min.css">
-            <style>
-                body {{ background: #f5f5f5; padding: 20px; }}
-                .container {{ max-width: 900px; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
-                .plugin-card {{ border: 1px solid #dee2e6; border-radius: 8px; padding: 15px; margin-bottom: 15px; }}
-                .plugin-card .badge {{ margin-left: 10px; }}
-                .plugin-actions {{ margin-top: 10px; }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <h1 class="mb-4">🧩 Plugins</h1>
-                
-                <div class="mb-3">
-                    <a href="/admin" class="btn btn-secondary">← Back to Admin</a>
-                </div>
-                
-                <div id="plugins-list">
-        """
-        
-        if not registered:
-            html += '<div class="alert alert-info">No plugins registered</div>'
-        else:
-            for definition in registered:
-                saved = next((p for p in plugins if p.plugin_id == definition.plugin_id), None)
-                is_enabled = saved.enabled if saved else False
-                
-                html += f"""
-                <div class="plugin-card" id="plugin-{definition.plugin_id}">
-                    <div class="d-flex justify-content-between align-items-center">
-                        <div>
-                            <h5>{definition.name}</h5>
-                            <p class="text-muted mb-1">{definition.description}</p>
-                            <small class="text-muted">ID: {definition.plugin_id}</small>
-                        </div>
-                        <div>
-                            <span class="badge {'bg-success' if is_enabled else 'bg-secondary'}">
-                                {'✅ Enabled' if is_enabled else '❌ Disabled'}
-                            </span>
-                        </div>
-                    </div>
-                    <div class="plugin-actions">
-                        <a href="/admin/plugin-config/{definition.plugin_id}" class="btn btn-sm btn-primary">⚙️ Configure</a>
-                    </div>
-                </div>
-                """
-        
-        html += """
-                </div>
-            </div>
-        </body>
-        </html>
-        """
-        return HTMLResponse(html)
+        self.plugin_id = plugin_id
 
-
-class PluginConfigView(CustomView):
-    """Редактирование конфигурации плагина"""
-    
-    def __init__(self, storage: AdminStorage):
-        super().__init__(
-            label="Plugin Config",
-            icon="puzzle-piece",
-            path="/plugin-config/{plugin_id}"
-        )
-        self.storage = storage
-    
     async def render(self, request: Request, templates: Jinja2Templates) -> HTMLResponse:  # <-- ДОБАВЛЯЕМ templates
-        plugin_id = request.path_params.get("plugin_id")
+        plugin_id = self.plugin_id
         definition = plugin_registry.get(plugin_id)
         
         if not definition:
             return HTMLResponse(f"""
             <html><body>
-                <h1>Plugin not found</h1>
-                <p>Plugin '{plugin_id}' is not registered</p>
-                <a href="/admin/plugins">← Back to plugins</a>
+                <h1>Component not found</h1>
+                <p>Component '{plugin_id}' is not registered</p>
+                <a href="/admin">← Back to Admin</a>
             </body></html>
             """, status_code=404)
         
@@ -299,7 +229,7 @@ class PluginConfigView(CustomView):
         <!DOCTYPE html>
         <html>
         <head>
-            <title>Plugin Config: {definition.name}</title>
+            <title>{definition.name} Config</title>
             <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/css/bootstrap.min.css">
             <style>
                 body {{ background: #f5f5f5; padding: 20px; }}
@@ -354,7 +284,7 @@ class PluginConfigView(CustomView):
                 </form>
                 
                 <div class="mt-3">
-                    <a href="/admin/plugins" class="btn btn-secondary">← Back to Plugins</a>
+                    <a href="/admin" class="btn btn-secondary">← Back to Admin</a>
                 </div>
             </div>
             
@@ -540,7 +470,11 @@ def create_admin_app(storage: AdminStorage, redis_client=None) -> BaseAdmin:
     )
     
     admin.add_view(BotConfigView(storage))
-    admin.add_view(PluginListView(storage))
-    admin.add_view(PluginConfigView(storage))
-    
+    admin.add_view(PluginDetailView(
+        storage, plugin_id="rag", label="RAG", icon="database", path="/rag"
+    ))
+    admin.add_view(PluginDetailView(
+        storage, plugin_id="ai_agent", label="AI Agent", icon="cpu", path="/ai-agent"
+    ))
+
     return admin
