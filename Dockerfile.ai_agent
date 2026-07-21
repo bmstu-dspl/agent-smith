@@ -1,23 +1,24 @@
 FROM python:3.14-slim
 
-
-COPY --from=ghcr.io/astral-sh/uv:0.11.25 /uv /uvx /bin/
-
 WORKDIR /app
 
-ENV PYTHONUNBUFFERED=1
-ENV UV_NO_DEV=1
-ENV UV_PYTHON_DOWNLOADS=0
+# Установка uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-
+# Копируем зависимости
 COPY pyproject.toml uv.lock ./
 
-RUN uv sync --frozen --no-install-project
-COPY . .
+# Устанавливаем зависимости с принудительной установкой starlette-admin
+RUN uv sync --no-dev --frozen && \
+    uv pip install redis>=5.0.0 starlette-admin==0.17.0
 
-RUN uv sync --frozen
+# Копируем код
+COPY ai_core/ ai_core/
+COPY admin_panel/ admin_panel/
+COPY shared/ shared/
+COPY memory/ memory/
+COPY DB/ DB/
 
-
-EXPOSE 8000
+ENV PYTHONPATH=/app
 
 CMD ["uv", "run", "uvicorn", "ai_core.main:app", "--host", "0.0.0.0", "--port", "8000"]

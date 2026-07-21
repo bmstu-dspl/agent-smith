@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+import json
 import logging
 import os
-import sys
 from pathlib import Path
-
-sys.path.append(str(Path(__file__).parent))
+import sys
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -13,64 +13,39 @@ from aiogram.enums import ParseMode
 from aiogram.types import WebhookInfo
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
+import httpx
 
-from app.handlers import router, set_esc_service, get_esc_service
+# Добавляем текущую директорию в PYTHONPATH для импорта модулей
+sys.path.append(str(Path(__file__).parent))
+
 from app.escalation_service import EscalationService
+from app.handlers import get_esc_service, router, set_esc_service
 from app.middleware.session_middleware import SessionMiddleware
 from app_runtime import AppRuntime
 from config import (
-    BOT_TOKEN, 
-    MANAGER_GROUP_ID, 
-    WEBHOOK_URL, 
-    WEBHOOK_PATH, 
-    PORT,
+    BOT_TOKEN,
     LOG_LEVEL,
-    REDIS_URL
+    MANAGER_GROUP_ID,
+    PORT,
+    REDIS_URL,
+    WEBHOOK_PATH,
+    WEBHOOK_URL,
+    apply_config_from_redis,
 )
+from shared.config_storage import ConfigStorage
+from shared.redis_client import get_redis_client
 
-# Настройка логирования ДО попытки импорта Redis
+# Настройка логирования
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Пытаемся импортировать Redis
-try:
-    from redis.asyncio import Redis
-    REDIS_AVAILABLE = True
-    logger.info("Redis module loaded successfully")
-except ImportError as e:
-    REDIS_AVAILABLE = False
-    logger.warning(f"Redis not available: {e}, using in-memory storage")
-
 # Глобальные переменные
 redis_client = None
 runtime: AppRuntime | None = None
 bot_instance: Bot | None = None
-
-
-async def setup_redis():
-    """Инициализация Redis (если доступен)"""
-    global redis_client
-    
-    if not REDIS_AVAILABLE:
-        logger.warning("Redis module not installed, using in-memory storage")
-        return None
-    
-    try:
-        redis_client = Redis.from_url(
-            REDIS_URL,
-            decode_responses=False,
-            max_connections=20
-        )
-        await redis_client.ping()
-        logger.info(f"Redis connected: {REDIS_URL}")
-        return redis_client
-    except Exception as e:
-        logger.error(f"Redis connection failed: {e}")
-        logger.warning("Falling back to in-memory storage")
-        return None
 
 
 def _env_bool(name: str, *, default: bool = False) -> bool:
@@ -97,20 +72,19 @@ async def on_startup(dispatcher: Dispatcher) -> None:
         return
     
     # Инициализация Redis
-    redis_client = await setup_redis()
-    
-    # Настройка FSM с Redis (если доступен)
-    if redis_client:
-        try:
-            from aiogram.fsm.storage.redis import RedisStorage
-            storage = RedisStorage(redis_client)
-            dispatcher.storage = storage
-            logger.info("Redis FSM storage configured")
-        except ImportError as e:
-            logger.warning(f"RedisStorage not available: {e}, using in-memory")
-        except Exception as e:
-            logger.error(f"Failed to configure Redis storage: {e}")
-    
+    try:
+        redis_client = await get_redis_client()
+        if redis_client:
+            logger.info("Redis connected")
+            # Загружаем конфигурацию из Redis
+            config_storage = ConfigStorage(redis_client)
+            config = await config_storage.get_config()
+            if config:
+                apply_config_from_redis(config)
+                logger.info("Configuration applied from Redis")
+    except Exception as e:
+        logger.error(f"Redis initialization failed: {e}")
+
     # Инициализация runtime
     try:
         runtime = AppRuntime.from_env()
@@ -167,7 +141,6 @@ async def on_startup(dispatcher: Dispatcher) -> None:
             logger.error(f"Failed to initialize escalation service: {e}", exc_info=True)
     else:
         logger.warning("MANAGER_GROUP_ID not set! Escalation service disabled.")
-        logger.warning("Please add MANAGER_GROUP_ID to .env file")
     
     # Настройка вебхука
     try:
@@ -297,7 +270,6 @@ def main() -> None:
         logger.info(f"Starting webhook server on port {PORT}")
         logger.info(f"Webhook URL: {WEBHOOK_URL}")
         logger.info(f"Manager Group ID: {MANAGER_GROUP_ID or 'Not set'}")
-        logger.info(f"Redis: {'Enabled' if REDIS_AVAILABLE else 'Disabled (fallback to in-memory)'}")
         logger.info("=" * 50)
         
         web.run_app(app, host="0.0.0.0", port=PORT)

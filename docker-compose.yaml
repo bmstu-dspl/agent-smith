@@ -125,6 +125,12 @@ services:
       GOOGLE_EMBEDDING_MAX_RETRIES: ${GOOGLE_EMBEDDING_MAX_RETRIES:-3}
       RAG_EXTRACTOR_LLM_PROVIDER: ${RAG_EXTRACTOR_LLM_PROVIDER:-google_vertex}
       RAG_EXTRACTOR_LLM_MODEL: ${RAG_EXTRACTOR_LLM_MODEL:-gemini-2.5-flash-lite}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_DB: "0"
+      REDIS_URL: redis://redis:6379/0
+      ADMIN_LOGIN: ${ADMIN_LOGIN:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
     secrets:
       - postgres_password
       - source: google_service_account

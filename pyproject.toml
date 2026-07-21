@@ -1,7 +1,7 @@
 [project]
 name = "agent-smith"
 version = "0.1.0"
-description = "Add your description here"
+description = "Universal assistant bot with admin panel"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
@@ -23,6 +23,8 @@ dependencies = [
     "aiogram[redis]>=3.29.0",
     "redis>=5.0.0",
     "aioredis>=2.0.0",
+    "starlette-admin>=0.17.0,<0.18.0",
+    "bcrypt>=4.0.0",
     "cryptography>=49.0.0",
     "pypdf>=6.0.0",
     "python-docx>=1.2.0",
