@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from .application import MemoryUseCases
+from ._file_parser import extract_file_text
 from ._repository import DocumentStore
+from .application import MemoryUseCases
 from .application.ports import EmbeddingProvider
 from .types import (
     AddDocumentVersionCommand,
@@ -19,6 +20,7 @@ from .types import (
     DocumentVersionDTO,
     GetDocumentQuery,
     GetVersionChunksQuery,
+    IngestFileDocumentCommand,
     IngestTextDocumentCommand,
     IngestTextDocumentResultDTO,
     ListDocumentsQuery,
@@ -53,6 +55,28 @@ class MemoryModule:
 
     def ingest_text_document(self, command: IngestTextDocumentCommand) -> IngestTextDocumentResultDTO:
         return self._use_cases.ingest_text_document(command)
+
+    def ingest_file_document(
+        self, command: IngestFileDocumentCommand
+    ) -> IngestTextDocumentResultDTO:
+        extracted = extract_file_text(command.file_name, command.file_content)
+        return self.ingest_text_document(
+            IngestTextDocumentCommand(
+                document_id=command.document_id,
+                version_id=command.version_id,
+                tenant_id=command.tenant_id,
+                title=command.title,
+                raw_text=extracted.text,
+                source_type=extracted.source_type,
+                visibility=command.visibility,
+                trust_level=command.trust_level,
+                chunk_visibility=command.chunk_visibility,
+                external_ref=command.external_ref,
+                original_name=extracted.original_name,
+                max_chunk_chars=command.max_chunk_chars,
+                chunk_overlap_chars=command.chunk_overlap_chars,
+            )
+        )
 
     def mark_version_processed(self, command: MarkVersionProcessedCommand) -> DocumentVersionDTO:
         return self._use_cases.mark_version_processed(command)

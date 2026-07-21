@@ -24,3 +24,11 @@ class EmbeddingError(MemoryError):
 
 class EmbeddingConfigurationError(EmbeddingError):
     """Raised when the embedding provider is misconfigured."""
+
+
+class FileParsingError(MemoryError):
+    """Raised when a supported file can not be converted to text."""
+
+
+class UnsupportedFileTypeError(FileParsingError):
+    """Raised when ingestion receives an unsupported file extension."""
