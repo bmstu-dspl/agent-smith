@@ -109,6 +109,7 @@ services:
       - --proxy-headers
       - --forwarded-allow-ips=*
     environment:
+      <<: *database-environment
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LLM_PROVIDER: ${LLM_PROVIDER:-google_vertex}
       LLM_MODEL: ${LLM_MODEL:-gemini-2.5-flash}
@@ -121,6 +122,7 @@ services:
       REDIS_DB: "0"
       REDIS_URL: redis://redis:6379/0
     secrets:
+      - postgres_password
       - source: google_service_account
         target: google_service_account.json
     networks:
