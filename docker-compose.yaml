@@ -161,6 +161,35 @@ services:
           cpus: ${AI_AGENT_CPU_LIMIT:-1.0}
           memory: ${AI_AGENT_MEMORY_LIMIT:-512M}
 
+  admin:
+    <<: *application
+    restart: unless-stopped
+    command:
+      - python
+      - -m
+      - uvicorn
+      - admin_panel.app:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8001"
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_DB: "0"
+      REDIS_URL: redis://redis:6379/0
+      ADMIN_LOGIN: ${ADMIN_LOGIN:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
+    networks:
+      - backend
+      - egress
+    expose:
+      - "8001"
+    depends_on:
+      redis:
+        condition: service_healthy
+
   bot:
     <<: *application
     restart: unless-stopped
