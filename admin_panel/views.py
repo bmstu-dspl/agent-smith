@@ -268,6 +268,32 @@ class PluginDetailView(CustomView):
                     <div class="form-text">{field_config.get('description', '')}</div>
                 </div>
                 """
+            elif field_type == "text":
+                import html as _html
+                escaped_value = _html.escape(str(field_default or ''))
+                html += f"""
+                <div class="form-group mb-3">
+                    <label for="{field_name}">{field_label}</label>
+                    <textarea class="form-control" id="{field_name}" name="{field_name}" 
+                              rows="12">{escaped_value}</textarea>
+                    <div class="form-text">{field_config.get('description', '')}</div>
+                </div>
+                """
+            elif field_type == "select":
+                options = field_config.get("options", [])
+                options_html = "".join(
+                    f'<option value="{opt}" {"selected" if opt == field_default else ""}>{opt}</option>'
+                    for opt in options
+                )
+                html += f"""
+                <div class="form-group mb-3">
+                    <label for="{field_name}">{field_label}</label>
+                    <select class="form-control" id="{field_name}" name="{field_name}">
+                        {options_html}
+                    </select>
+                    <div class="form-text">{field_config.get('description', '')}</div>
+                </div>
+                """
             else:
                 html += f"""
                 <div class="form-group mb-3">
