@@ -1,14 +1,12 @@
 import asyncio
 import json
 from typing import Literal
-
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-
-from ai_core.graph.prompts import AGENT_SYSTEM_PROMPT
+from ai_core.graph.prompts import AGENT_SYSTEM_PROMPT, RAG_QUERY_EXTRACTOR_PROMPT
 from ai_core.graph.state import AgentState
-
 from RAG import BuildAgentContextQuery
-
+from pydantic import ValidationError
+from ai_core.graph.rag_query import RagSearchRequest
 
 def input_guard(state: AgentState) -> dict:
     user_message = state.get("user_message", "").strip()
@@ -37,27 +35,18 @@ class AgentNode:
         self.llm = llm
 
     async def __call__(self, state: AgentState) -> dict:
+        messages = [SystemMessage(content=AGENT_SYSTEM_PROMPT)]
         rag_context = state.get("rag_context") or ""
-        system_prompt = AGENT_SYSTEM_PROMPT
         if rag_context:
-            system_prompt += (
-                "\n\nКонтекст из базы знаний:\n"
-                f"{rag_context}\n\n"
-                "Используй этот контекст, если он релевантен вопросу пользователя. "
-                "Если ответа в контексте нет, не выдумывай и скажи, что данных недостаточно."
-            )
-
-        messages = [
-              SystemMessage(content=system_prompt),
-              *state.get("messages", []),
-        ]
-
+            messages.append(SystemMessage(
+                content=("Контекст базы знаний для текущего ответа. "
+                         "Используй его только если он релевантен вопросу пользователя. "
+                         "Если в контексте нет ответа, не выдумывай.\n\n"
+                         f"{rag_context}")
+            ))
+        messages.extend(state.get("messages", []))
         response = await self.llm.ainvoke(messages)
-
-        return {
-              "messages": [response],
-              "answer": getattr(response, "content", ""),
-        }
+        return {"messages": [response], "answer": getattr(response, "content", "")}
 
 
 class RagRetrievalNode:
@@ -65,28 +54,19 @@ class RagRetrievalNode:
         self.memory = memory
 
     async def __call__(self, state: AgentState) -> dict:
-        query = state.get("user_message", "").strip()
+        rag_query = state.get("rag_query", "").strip()
         metadata = state.get("metadata", {})
-        tenant_id = str(
-            metadata.get("tenant_id")
-            or metadata.get("user_id")
-            or "default"
-        )
-        if not query:
+        tenant_id = str(metadata.get("tenant_id") or metadata.get("user_id") or "default")
+        if not rag_query:
             return {"rag_context": ""}
-        context_query = BuildAgentContextQuery(
+        query = BuildAgentContextQuery(
             tenant_id=tenant_id,
-            query=query,
+            query=rag_query,
             limit=8,
             max_context_chars=12_000,
         )
-        context = await asyncio.to_thread(
-            self.memory.build_agent_context,
-            context_query,
-        )
-        return {
-            "rag_context": context.context_text,
-        }
+        context = await asyncio.to_thread(self.memory.build_agent_context, query)
+        return {"rag_context": context.context_text}
 
 
 def _parse_tool_payload(content: object) -> dict:
@@ -156,3 +136,47 @@ def route_after_tool_output_guard(state: AgentState) -> Literal["agent", "end"]:
     if state.get("blocked") and state.get("block_reason") == "waiting_user":
         return "end"
     return "agent"
+
+
+def _extract_json_object(text: str) -> dict:
+    raw = text.strip()
+    if raw.startswith("```"):
+        raw = raw.strip("`").removeprefix("json").strip()
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            raise
+        parsed = json.loads(raw[start:end + 1])
+    if not isinstance(parsed, dict):
+        raise ValueError("RAG query extractor returned non-object JSON")
+    return parsed
+
+
+class RagQueryExtractorNode:
+    def __init__(self, llm) -> None:
+        self.llm = llm
+
+    async def __call__(self, state: AgentState) -> dict:
+        user_message = state.get("user_message", "").strip()
+        if not user_message:
+            return {"rag_query": "", "rag_topic": ""}
+        try:
+            response = await self.llm.ainvoke([
+                SystemMessage(content=RAG_QUERY_EXTRACTOR_PROMPT),
+                HumanMessage(content=user_message),
+            ])
+        except Exception:
+            return {"rag_query": "", "rag_topic": ""}
+
+        content = getattr(response, "content", "")
+        if not isinstance(content, str):
+            content = str(content)
+        try:
+            payload = _extract_json_object(content)
+            request = RagSearchRequest.model_validate(payload)
+        except (json.JSONDecodeError, ValidationError, ValueError):
+            return {"rag_query": "", "rag_topic": ""}
+        return {"rag_query": request.to_query(), "rag_topic": request.topic}

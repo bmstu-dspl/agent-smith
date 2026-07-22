@@ -11,6 +11,7 @@ from ai_core.contracts.schemas import Button, IncomingMessage
 from ai_core.graph.nodes import (
     AgentNode,
     RagRetrievalNode,
+    RagQueryExtractorNode,
     input_guard,
     route_after_input_guard,
     route_after_tool_output_guard,
@@ -91,7 +92,32 @@ def build_llm():
     raise ValueError(f"Unsupported LLM_PROVIDER: {provider}")
 
 
-def build_langgraph(llm, tool_registry: ToolRegistry, checkpointer=None, rag_memory=None):
+def build_rag_extractor_llm(default_llm):
+    provider = os.getenv("RAG_EXTRACTOR_LLM_PROVIDER", "google_vertex").strip().lower()
+    if provider in {"", "same", "default"}:
+        return default_llm
+
+    model = os.getenv("RAG_EXTRACTOR_LLM_MODEL", "gemini-2.5-flash-lite").strip()
+
+    if provider in {"google_vertex", "vertex"}:
+        project = os.getenv("GOOGLE_CLOUD_PROJECT")
+        credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+
+        if not project or not credentials_path:
+            return default_llm
+
+        return ChatGoogleGenerativeAI(
+            model=model,
+            vertexai=True,
+            project=project,
+            location=os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1"),
+            temperature=0,
+        )
+
+    raise ValueError(f"Unsupported RAG_EXTRACTOR_LLM_PROVIDER: {provider}")
+
+
+def build_langgraph(llm, tool_registry: ToolRegistry, checkpointer=None, rag_memory=None, rag_extractor_llm=None):
     tools = tool_registry.get_tools()
     agent_llm = llm.bind_tools(tools) if tools else llm
 
@@ -100,11 +126,14 @@ def build_langgraph(llm, tool_registry: ToolRegistry, checkpointer=None, rag_mem
     workflow.add_node("input_guard", input_guard)
     workflow.add_node("agent", AgentNode(agent_llm))
     if rag_memory is not None:
+        workflow.add_node("rag_query_extractor", RagQueryExtractorNode(rag_extractor_llm or llm))
         workflow.add_node("rag_retrieval", RagRetrievalNode(rag_memory))
-        next_node_after_guard = "rag_retrieval"
+        next_node_after_guard = "rag_query_extractor"
+        workflow.add_edge("rag_query_extractor", "rag_retrieval")
         workflow.add_edge("rag_retrieval", "agent")
     else:
         next_node_after_guard = "agent"
+
     workflow.add_edge(START, "input_guard")
 
     workflow.add_conditional_edges(
@@ -215,5 +244,12 @@ def build_graph(checkpointer=None, tool_registry: ToolRegistry | None = None, ra
         return StubGraph()
 
     registry = tool_registry or ToolRegistry()
-    graph = build_langgraph(llm, registry, checkpointer=checkpointer, rag_memory=rag_memory)
+    rag_extractor_llm = build_rag_extractor_llm(llm) if rag_memory is not None else None
+    graph = build_langgraph(
+        llm,
+        registry,
+        checkpointer=checkpointer,
+        rag_memory=rag_memory,
+        rag_extractor_llm=rag_extractor_llm,
+    )
     return AgentGraph(graph, registry)

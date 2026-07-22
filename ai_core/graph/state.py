@@ -15,5 +15,7 @@ class AgentState(TypedDict, total=False):
     answer: str | None
     blocked: bool
     block_reason: str | None
+    rag_query: str | None
+    rag_topic: str | None
     rag_context: str | None
     tool_result: str | None
