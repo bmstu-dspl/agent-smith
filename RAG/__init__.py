@@ -5,7 +5,9 @@ from ._errors import (
     DocumentNotFoundError,
     EmbeddingConfigurationError,
     EmbeddingError,
+    FileParsingError,
     MemoryError,
+    UnsupportedFileTypeError,
     ValidationError,
 )
 from .embeddings import GoogleEmbeddingConfig, GoogleEmbeddingProvider
@@ -26,6 +28,7 @@ from .types import (
     DocumentVersionDTO,
     GetDocumentQuery,
     GetVersionChunksQuery,
+    IngestFileDocumentCommand,
     IngestTextDocumentCommand,
     IngestTextDocumentResultDTO,
     ListDocumentsQuery,
@@ -57,10 +60,12 @@ __all__ = [
     "DocumentVersionDTO",
     "EmbeddingConfigurationError",
     "EmbeddingError",
+    "FileParsingError",
     "GoogleEmbeddingConfig",
     "GoogleEmbeddingProvider",
     "GetDocumentQuery",
     "GetVersionChunksQuery",
+    "IngestFileDocumentCommand",
     "InMemoryDocumentStore",
     "IngestTextDocumentCommand",
     "IngestTextDocumentResultDTO",
@@ -74,5 +79,6 @@ __all__ = [
     "RejectVersionCommand",
     "SearchPublishedMemoryQuery",
     "ValidationError",
+    "UnsupportedFileTypeError",
     "VectorizeVersionCommand",
 ]

@@ -47,7 +47,9 @@ printf '%s' 'replace-with-a-random-password' > secrets/postgres_password
 printf '%s' 'replace-with-telegram-token' > secrets/bot_token
 # Save the complete service account JSON received from Google at the path configured by
 # GOOGLE_SERVICE_ACCOUNT_FILE (default: secrets/google_service_account.json).
-chmod 600 secrets/*
+# Compose file secrets are bind-mounted and read by container UID 10001.
+# The parent directory remains private, while files must be readable in containers.
+chmod 644 secrets/*
 ```
 
 Set `APP_DOMAIN` and set `GOOGLE_CLOUD_PROJECT` to the JSON `project_id` in `.env`, then

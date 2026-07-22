@@ -5,6 +5,7 @@
 Модуль дает:
 - доменную модель документа, версии и чанков
 - use-case слой для ingestion/review/publish/search flow
+- извлечение текста из DOCX, PDF, TXT, Markdown и HTML
 - стабильный chunking текста
 - in-memory store для тестов и локальной разработки
 - PostgreSQL-backed store поверх общего модуля `DB`
@@ -21,6 +22,7 @@
 from RAG import (
     ArchiveVersionCommand,
     DeleteDocumentCommand,
+    IngestFileDocumentCommand,
     IngestTextDocumentCommand,
     GoogleEmbeddingConfig,
     GoogleEmbeddingProvider,
@@ -36,7 +38,7 @@ from RAG import (
 
 Публичный фасад `MemoryModule` предоставляет операции:
 
-- `create_document`, `add_document_version`, `ingest_text_document`;
+- `create_document`, `add_document_version`, `ingest_text_document`, `ingest_file_document`;
 - `mark_version_processed`, `approve_version`, `reject_version`, `publish_version`;
 - `archive_version`, `delete_version`, `delete_document`;
 - `get_document`, `list_documents`, `get_version_chunks`;
@@ -192,6 +194,43 @@ uv run python -m unittest \
 
 `IngestTextDocumentCommand` создает документ при необходимости, добавляет версию,
 делит текст на чанки и переводит версию в статус `processed`.
+
+`IngestFileDocumentCommand` принимает загруженный файл в виде `bytes`, извлекает текст и
+передает его в тот же ingestion flow. Поэтому chunking, embeddings, review, публикация,
+поиск и сохранение работают так же, как для обычного текста:
+
+```python
+from pathlib import Path
+
+from RAG import IngestFileDocumentCommand
+
+file_path = Path("terms.pdf")
+result = memory.ingest_file_document(
+    IngestFileDocumentCommand(
+        document_id="terms",
+        version_id="terms-v1",
+        tenant_id="tenant-1",
+        title="Terms of service",
+        file_name=file_path.name,
+        file_content=file_path.read_bytes(),
+        trust_level="trusted",
+    )
+)
+```
+
+Поддерживаемые форматы:
+
+- `.txt` - UTF-8, сохраняется как `source_type="text"`;
+- `.md`/`.markdown` - UTF-8, Markdown-разметка остается текстом;
+- `.html`/`.htm` - берется видимый текст, `head`, `script`, `style`, `template` и
+  `noscript` исключаются;
+- `.docx` - извлекаются абзацы и таблицы в порядке документа;
+- `.pdf` - извлекается существующий текстовый слой по страницам.
+
+Тип определяется по расширению `file_name`, а безопасное базовое имя сохраняется в
+`original_name`. Пустые, поврежденные, зашифрованные и неподдерживаемые файлы вызывают
+`FileParsingError`/`UnsupportedFileTypeError` до записи документа. OCR не выполняется:
+сканированный PDF без текстового слоя считается пустым.
 
 Настройки chunking:
 
