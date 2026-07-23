@@ -45,6 +45,22 @@ class IngestTextDocumentCommand:
 
 
 @dataclass(slots=True, frozen=True)
+class IngestFileDocumentCommand:
+    document_id: str
+    version_id: str
+    tenant_id: str
+    title: str
+    file_name: str
+    file_content: bytes
+    visibility: str = "tenant"
+    trust_level: str = "unknown"
+    chunk_visibility: str = "tenant"
+    external_ref: str = ""
+    max_chunk_chars: int = 1200
+    chunk_overlap_chars: int = 150
+
+
+@dataclass(slots=True, frozen=True)
 class ChunkInput:
     chunk_id: str
     index: int

@@ -1,5 +1,3 @@
-# callback_handler.py - отдельный модуль для обработки callback
-
 import logging
 from typing import Dict, Any
 from aiogram.types import CallbackQuery

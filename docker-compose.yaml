@@ -65,6 +65,23 @@ services:
     networks:
       - backend
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+    networks:
+      - backend
+
   migrate:
     <<: *application
     restart: "no"
@@ -130,6 +147,8 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
     deploy:
       resources:
         limits:
@@ -158,6 +177,10 @@ services:
       GOOGLE_EMBEDDING_DIMENSIONS: "1536"
       GOOGLE_EMBEDDING_TIMEOUT: ${GOOGLE_EMBEDDING_TIMEOUT:-30}
       GOOGLE_EMBEDDING_MAX_RETRIES: ${GOOGLE_EMBEDDING_MAX_RETRIES:-3}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_DB: "0"
+      REDIS_URL: redis://redis:6379/0
     secrets:
       - bot_token
       - postgres_password
@@ -182,6 +205,8 @@ services:
       migrate:
         condition: service_completed_successfully
       ai-agent:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     deploy:
       resources:
@@ -232,6 +257,7 @@ secrets:
 
 volumes:
   postgres_data:
+  redis_data:
   caddy_data:
   caddy_config:
 

@@ -1,6 +1,11 @@
 import pytest
 
 from memory.messages_store import MessagesStore
+from datetime import datetime, timedelta, timezone
+
+from sqlalchemy import update
+
+from memory._models import MessageModel
 
 pytestmark = pytest.mark.asyncio
 
@@ -118,3 +123,50 @@ async def test_find_buttons_context_respects_lookback_window(messages_store: Mes
     label = await messages_store.find_buttons_context(session_id, "old_offer", lookback=3)
 
     assert label is None
+
+
+
+
+async def test_get_handoff_history_uses_time_window_when_enough_messages(messages_store: MessagesStore):
+    """Если сообщений за окно достаточно (>= fallback_count) — время само по себе не режет диалог."""
+    session_id = "session-handoff-window"
+    for i in range(3):
+        await messages_store.append_message(session_id, "user", f"Сообщение {i}")
+
+    history = await messages_store.get_handoff_history(session_id, hours=24, fallback_count=2)
+
+    assert len(history) == 3
+    assert [m["content"] for m in history] == ["Сообщение 0", "Сообщение 1", "Сообщение 2"]
+
+
+async def test_get_handoff_history_falls_back_when_window_too_small(messages_store: MessagesStore):
+    """Сообщения старше окна, но их мало в окне — должен сработать fallback по количеству."""
+    session_id = "session-handoff-fallback"
+    old_id = await messages_store.append_message(session_id, "user", "Старое сообщение")
+    await messages_store.append_message(session_id, "user", "Новое сообщение")
+
+    # искусственно состариваем первое сообщение, чтобы оно выпало из временного окна
+    with messages_store._db.session() as db_session:
+        db_session.execute(
+            update(MessageModel)
+            .where(MessageModel.message_id == old_id)
+            .values(created_at=datetime.now(timezone.utc) - timedelta(hours=48))
+        )
+
+    history = await messages_store.get_handoff_history(session_id, hours=24, fallback_count=2)
+
+    assert len(history) == 2
+    assert [m["content"] for m in history] == ["Старое сообщение", "Новое сообщение"]
+
+
+async def test_get_handoff_history_excludes_deactivated_messages(messages_store: MessagesStore):
+    """Guardrails: отфильтрованные (is_active=False) сообщения не должны попадать оператору."""
+    session_id = "session-handoff-guardrails"
+    bad_id = await messages_store.append_message(session_id, "user", "Запрещённый контент")
+    await messages_store.append_message(session_id, "assistant", "Обычный ответ")
+    await messages_store.deactivate_messages([bad_id])
+
+    history = await messages_store.get_handoff_history(session_id, hours=24, fallback_count=1)
+
+    assert len(history) == 1
+    assert history[0]["content"] == "Обычный ответ"
