@@ -16,15 +16,7 @@ RECONNECT_DELAY_SECONDS = 5.0
 class McpServerChangeListener:
     """Слушает уведомления Postgres (LISTEN/NOTIFY) об изменениях в таблице mcp_servers
     и вызывает переданный callback (пересборка графа).
-
-    Работает через отдельное, независимое от основного SQLAlchemy-пула соединение —
-    по той же логике, что и Checkpointer: LISTEN/NOTIFY требует постоянно открытое
-    соединение, которое слушает канал, это другая модель работы, чем обычные
-    короткие запросы через session().
-
-    Уведомления дебаунсятся: если несколько изменений приходят быстро подряд
-    (например, админка добавляет сразу несколько серверов), граф пересобирается
-    один раз после того, как поток изменений утихнет, а не при каждом уведомлении."""
+    Работает через отдельное, независимое от основного SQLAlchemy-пула соединение"""
 
     def __init__(
         self,
@@ -55,8 +47,6 @@ class McpServerChangeListener:
             await self._connection.close()
 
     async def _run(self) -> None:
-        """Внешний цикл — переподключается, если соединение LISTEN оборвалось
-        (например, база на секунду недоступна). Не должен падать насовсем."""
         while True:
             try:
                 await self._listen_forever()
@@ -70,11 +60,19 @@ class McpServerChangeListener:
                 await asyncio.sleep(RECONNECT_DELAY_SECONDS)
 
     async def _listen_forever(self) -> None:
-        self._connection = await psycopg.AsyncConnection.connect(self._dsn, autocommit=True)
+        self._connection = await psycopg.AsyncConnection.connect(
+            self._dsn,
+            autocommit=True,
+            keepalives=1,
+            keepalives_idle=30,
+            keepalives_interval=10,
+            keepalives_count=3,
+        )
         async with self._connection:
             await self._connection.execute(f"LISTEN {NOTIFY_CHANNEL};")
             logger.info("listening for mcp_servers changes on channel %s", NOTIFY_CHANNEL)
-            async for _ in self._connection.notifies():
+            async for notify in self._connection.notifies():
+                logger.info("received mcp_servers_changed notify: %s", notify)
                 self._schedule_rebuild()
 
     def _schedule_rebuild(self) -> None:
@@ -88,6 +86,8 @@ class McpServerChangeListener:
         except asyncio.CancelledError:
             return
         try:
+            logger.info("rebuilding graph after mcp_servers change")
             await self._on_change()
+            logger.info("graph rebuilt successfully after mcp_servers change")
         except Exception:
             logger.exception("mcp server change callback (graph rebuild) failed")

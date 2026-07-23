@@ -28,7 +28,9 @@ def upgrade() -> None:
         """
         DROP TRIGGER IF EXISTS trg_mcp_servers_notify ON mcp_servers;
         CREATE TRIGGER trg_mcp_servers_notify
-        AFTER INSERT OR UPDATE OR DELETE ON mcp_servers
+        AFTER INSERT OR DELETE OR UPDATE OF
+            name, url, transport_type, headers_encrypted, query_params_encrypted, is_active
+        ON mcp_servers
         FOR EACH STATEMENT
         EXECUTE FUNCTION notify_mcp_servers_change();
         """
