@@ -16,6 +16,7 @@ from .auth import SimpleAdminAuth
 from .storage import AdminStorage
 from .models import BotConfig
 from .plugin_system import plugin_registry
+from mcp_registry import McpServerStore
 
 logger = logging.getLogger(__name__)
 
@@ -371,6 +372,264 @@ class PluginDetailView(CustomView):
         return HTMLResponse(html)
 
 
+class McpServersView(CustomView):
+    """Страница управления реестром MCP-серверов (таблица mcp_servers из модуля mcp_registry).
+
+    store может быть None, если Postgres/ключ шифрования недоступны при старте — тогда
+    страница показывает предупреждение вместо таблицы.
+    """
+
+    def __init__(self, store: "McpServerStore | None"):
+        super().__init__(
+            label="MCP Servers",
+            icon="plug",
+            path="/mcp-servers",
+        )
+        self.store = store
+
+    async def render(self, request: Request, templates: Jinja2Templates) -> HTMLResponse:
+        import asyncio
+        import html as _html
+
+        if self.store is None:
+            return HTMLResponse("""
+            <html><body style="font-family: sans-serif; padding: 40px;">
+                <h1>⚠️ MCP Servers</h1>
+                <p>Реестр MCP-серверов недоступен: нет подключения к Postgres или не задан
+                <code>MCP_SECRETS_ENCRYPTION_KEY</code>. Проверьте переменные окружения и перезапустите admin.</p>
+                <a href="/admin">← Back to Admin</a>
+            </body></html>
+            """, status_code=503)
+
+        try:
+            servers = await asyncio.to_thread(self.store.list_servers)
+        except Exception as e:
+            logger.error(f"Error loading MCP servers: {e}")
+            servers = []
+
+        rows_html = ""
+        for s in servers:
+            last_connected = s.last_connected_at.strftime("%Y-%m-%d %H:%M UTC") if s.last_connected_at else "—"
+            error_html = f'<span class="text-danger" title="{_html.escape(s.error_message)}">⚠️ error</span>' if s.error_message else "—"
+            status_badge = '<span class="badge bg-success">active</span>' if s.is_active else '<span class="badge bg-secondary">disabled</span>'
+            has_secrets = "🔒" if (s.headers or s.query_params) else "—"
+            rows_html += f"""
+            <tr data-server-id="{_html.escape(s.server_id)}">
+                <td>{_html.escape(s.name)}</td>
+                <td><code>{_html.escape(s.transport_type)}</code></td>
+                <td class="text-break">{_html.escape(s.url)}</td>
+                <td class="text-center">{has_secrets}</td>
+                <td>{status_badge}</td>
+                <td class="small text-muted">{last_connected}</td>
+                <td>{error_html}</td>
+                <td class="text-end">
+                    <button class="btn btn-sm btn-outline-secondary toggle-btn" data-active="{str(s.is_active).lower()}">
+                        {'Disable' if s.is_active else 'Enable'}
+                    </button>
+                    <button class="btn btn-sm btn-outline-danger delete-btn">Delete</button>
+                </td>
+            </tr>
+            """
+
+        if not rows_html:
+            rows_html = '<tr><td colspan="8" class="text-center text-muted">Серверов пока нет</td></tr>'
+
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>MCP Servers</title>
+            <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/css/bootstrap.min.css">
+            <style>
+                body {{ background: #f5f5f5; padding: 20px; }}
+                .container {{ max-width: 1100px; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+                table {{ margin-top: 10px; }}
+                .form-group {{ margin-bottom: 15px; }}
+                .alert {{ margin-top: 20px; display: none; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1 class="mb-4">🔌 MCP Servers</h1>
+                <p class="text-muted">Реестр подключённых MCP-серверов (таблица <code>mcp_servers</code>). Заголовки
+                и query-параметры хранятся в БД в зашифрованном виде.</p>
+
+                <div id="alert" class="alert" role="alert"></div>
+
+                <table class="table table-bordered table-hover align-middle">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Transport</th>
+                            <th>URL</th>
+                            <th class="text-center">Secrets</th>
+                            <th>Status</th>
+                            <th>Last connected</th>
+                            <th>Error</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="servers-tbody">
+                        {rows_html}
+                    </tbody>
+                </table>
+
+                <hr class="my-4">
+
+                <h4>➕ Add server</h4>
+                <form id="add-form">
+                    <div class="row">
+                        <div class="col-md-6 form-group">
+                            <label for="name">Name *</label>
+                            <input type="text" class="form-control" id="name" name="name" required>
+                        </div>
+                        <div class="col-md-3 form-group">
+                            <label for="transport_type">Transport *</label>
+                            <select class="form-control" id="transport_type" name="transport_type">
+                                <option value="sse">sse</option>
+                                <option value="http">http</option>
+                                <option value="stdio">stdio</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3 form-group">
+                            <label for="is_active_hint">&nbsp;</label>
+                            <div class="form-text">Новый сервер добавляется включённым.</div>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="url">URL *</label>
+                        <input type="text" class="form-control" id="url" name="url" placeholder="https://example.com/sse" required>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-6 form-group">
+                            <label for="headers">Headers (JSON)</label>
+                            <textarea class="form-control" id="headers" name="headers" rows="3" placeholder='{{"Authorization": "Bearer ..."}}'>{{}}</textarea>
+                            <div class="form-text">Будет зашифровано перед сохранением в БД.</div>
+                        </div>
+                        <div class="col-md-6 form-group">
+                            <label for="query_params">Query params (JSON)</label>
+                            <textarea class="form-control" id="query_params" name="query_params" rows="3" placeholder='{{"api_key": "..."}}'>{{}}</textarea>
+                            <div class="form-text">Будет зашифровано перед сохранением в БД.</div>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary">💾 Add server</button>
+                </form>
+
+                <div class="mt-4">
+                    <a href="/admin" class="btn btn-secondary">← Back to Admin</a>
+                </div>
+            </div>
+
+            <script>
+                function showAlert(ok, message) {{
+                    const alertEl = document.getElementById('alert');
+                    alertEl.className = 'alert ' + (ok ? 'alert-success' : 'alert-danger');
+                    alertEl.textContent = (ok ? '✅ ' : '❌ ') + message;
+                    alertEl.style.display = 'block';
+                    setTimeout(() => {{ alertEl.style.display = 'none'; }}, 5000);
+                }}
+
+                function parseJsonField(value, fieldLabel) {{
+                    const trimmed = (value || '').trim();
+                    if (!trimmed) return {{}};
+                    try {{
+                        const parsed = JSON.parse(trimmed);
+                        if (typeof parsed !== 'object' || Array.isArray(parsed) || parsed === null) {{
+                            throw new Error('not an object');
+                        }}
+                        return parsed;
+                    }} catch (e) {{
+                        throw new Error(fieldLabel + ' must be a valid JSON object, e.g. {{"key": "value"}}');
+                    }}
+                }}
+
+                document.getElementById('add-form').addEventListener('submit', async (e) => {{
+                    e.preventDefault();
+                    const formData = new FormData(e.target);
+
+                    let headers, query_params;
+                    try {{
+                        headers = parseJsonField(formData.get('headers'), 'Headers');
+                        query_params = parseJsonField(formData.get('query_params'), 'Query params');
+                    }} catch (err) {{
+                        showAlert(false, err.message);
+                        return;
+                    }}
+
+                    const payload = {{
+                        name: formData.get('name'),
+                        transport_type: formData.get('transport_type'),
+                        url: formData.get('url'),
+                        headers: headers,
+                        query_params: query_params,
+                    }};
+
+                    try {{
+                        const response = await fetch('/admin/api/mcp-servers', {{
+                            method: 'POST',
+                            headers: {{ 'Content-Type': 'application/json' }},
+                            body: JSON.stringify(payload)
+                        }});
+                        const result = await response.json();
+                        if (response.ok) {{
+                            showAlert(true, 'Server added');
+                            setTimeout(() => location.reload(), 800);
+                        }} else {{
+                            showAlert(false, result.error || 'Error adding server');
+                        }}
+                    }} catch (err) {{
+                        showAlert(false, 'Error: ' + err.message);
+                    }}
+                }});
+
+                document.getElementById('servers-tbody').addEventListener('click', async (e) => {{
+                    const row = e.target.closest('tr');
+                    if (!row) return;
+                    const serverId = row.dataset.serverId;
+
+                    if (e.target.classList.contains('toggle-btn')) {{
+                        const isActive = e.target.dataset.active === 'true';
+                        try {{
+                            const response = await fetch(`/admin/api/mcp-servers/${{serverId}}/toggle`, {{
+                                method: 'POST',
+                                headers: {{ 'Content-Type': 'application/json' }},
+                                body: JSON.stringify({{ is_active: !isActive }})
+                            }});
+                            const result = await response.json();
+                            if (response.ok) {{
+                                showAlert(true, 'Status updated');
+                                setTimeout(() => location.reload(), 500);
+                            }} else {{
+                                showAlert(false, result.error || 'Error');
+                            }}
+                        }} catch (err) {{
+                            showAlert(false, 'Error: ' + err.message);
+                        }}
+                    }}
+
+                    if (e.target.classList.contains('delete-btn')) {{
+                        if (!confirm('Delete this MCP server? This cannot be undone.')) return;
+                        try {{
+                            const response = await fetch(`/admin/api/mcp-servers/${{serverId}}`, {{ method: 'DELETE' }});
+                            const result = await response.json();
+                            if (response.ok) {{
+                                showAlert(true, 'Server deleted');
+                                setTimeout(() => location.reload(), 500);
+                            }} else {{
+                                showAlert(false, result.error || 'Error');
+                            }}
+                        }} catch (err) {{
+                            showAlert(false, 'Error: ' + err.message);
+                        }}
+                    }}
+                }});
+            </script>
+        </body>
+        </html>
+        """
+        return HTMLResponse(html)
+
+
 # ==================== ОТДЕЛЬНЫЕ РОУТЫ ДЛЯ ЛОГИНА ====================
 
 async def login_page(request: Request):
@@ -485,7 +744,7 @@ async def logout(request: Request):
     return response
 
 
-def create_admin_app(storage: AdminStorage, redis_client=None) -> BaseAdmin:
+def create_admin_app(storage: AdminStorage, redis_client=None, mcp_store: "McpServerStore | None" = None) -> BaseAdmin:
     """Создание и настройка админ-приложения с отдельными роутами для логина"""
     
     # Создаем админку с auth_provider=None (отключаем встроенную аутентификацию)
@@ -502,5 +761,6 @@ def create_admin_app(storage: AdminStorage, redis_client=None) -> BaseAdmin:
     admin.add_view(PluginDetailView(
         storage, plugin_id="ai_agent", label="AI Agent", icon="cpu", path="/ai-agent"
     ))
+    admin.add_view(McpServersView(mcp_store))
 
     return admin

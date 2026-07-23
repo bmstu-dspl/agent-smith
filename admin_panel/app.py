@@ -13,9 +13,28 @@ from shared.config_storage import ConfigStorage
 from admin_panel import create_admin_app, AdminStorage
 from admin_panel.register_plugins import register_all_plugins
 from admin_panel.views import login_page, login_post, logout
+from DB import DatabaseConfig, PostgresDatabase
+from mcp_registry import McpServerStore
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
+
+
+def _init_mcp_store() -> tuple["PostgresDatabase | None", "McpServerStore | None"]:
+    """Отдельная (от основного PostgresDatabase других сервисов) БД-коннекция для админки.
+    Реестр MCP-серверов требует Postgres и MCP_SECRETS_ENCRYPTION_KEY (шифрование секретов);
+    если чего-то из этого нет — вкладка MCP Servers показывает предупреждение, остальная админка работает."""
+    if not os.getenv("MCP_SECRETS_ENCRYPTION_KEY"):
+        logger.warning("⚠️ MCP_SECRETS_ENCRYPTION_KEY not set, MCP Servers tab disabled")
+        return None, None
+    try:
+        database = PostgresDatabase(DatabaseConfig.from_env())
+        database.open()
+        logger.info("✅ Postgres connected (mcp_registry)")
+        return database, McpServerStore(database)
+    except Exception as e:
+        logger.warning(f"⚠️ Postgres not available, MCP Servers tab disabled: {e}")
+        return None, None
 
 
 @asynccontextmanager
@@ -30,6 +49,9 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"⚠️ Redis connection error: {e}")
 
+    mcp_database, mcp_store = _init_mcp_store()
+    app.state.mcp_store = mcp_store
+
     if redis:
         config_storage = ConfigStorage(redis)
         admin_storage = AdminStorage(config_storage)
@@ -37,7 +59,7 @@ async def lifespan(app: FastAPI):
         app.state.admin_storage = admin_storage
         app.state.config_storage = config_storage
 
-        admin_app = create_admin_app(admin_storage, redis)
+        admin_app = create_admin_app(admin_storage, redis, mcp_store)
         admin_app.mount_to(app)
 
         from admin_panel.routes import router as admin_api_router
@@ -56,6 +78,10 @@ async def lifespan(app: FastAPI):
     if redis:
         await shared_redis_client.close()
         logger.info("✅ Redis connection closed")
+
+    if mcp_database:
+        mcp_database.close()
+        logger.info("✅ Postgres connection closed (mcp_registry)")
 
 
 app = FastAPI(title="Agent Smith Admin", lifespan=lifespan)

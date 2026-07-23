@@ -67,6 +67,28 @@ class PluginConfig(BaseModel):
     created_at: Optional[str] = Field(None, description="Дата создания")
     updated_at: Optional[str] = Field(None, description="Дата обновления")
 
+class McpTransportType(str, Enum):
+    SSE = "sse"
+    HTTP = "http"
+    STDIO = "stdio"
+
+class McpServerCreate(BaseModel):
+    """Данные для добавления нового MCP-сервера"""
+    name: str = Field(..., min_length=1, description="Понятное имя сервера")
+    transport_type: McpTransportType = Field(default=McpTransportType.SSE, description="Способ подключения")
+    url: str = Field(..., min_length=1, description="Адрес сервера")
+    headers: Dict[str, Any] = Field(default_factory=dict, description="HTTP-заголовки (например, токен авторизации)")
+    query_params: Dict[str, Any] = Field(default_factory=dict, description="Параметры запроса в адресной строке")
+
+class McpServerCredentialsUpdate(BaseModel):
+    """Обновление секретов существующего MCP-сервера. Поле, оставленное пустым (None), не меняется."""
+    headers: Optional[Dict[str, Any]] = None
+    query_params: Optional[Dict[str, Any]] = None
+
+class McpServerToggle(BaseModel):
+    is_active: bool
+
+
 class PluginSchema(BaseModel):
     """Схема конфигурации плагина (для автоматической генерации формы)"""
     plugin_id: str
