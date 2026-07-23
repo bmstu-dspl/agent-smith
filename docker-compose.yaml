@@ -110,6 +110,7 @@ services:
       - --forwarded-allow-ips=*
     environment:
       <<: *database-environment
+      RUN_DB_MIGRATIONS: "false"
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LLM_PROVIDER: ${LLM_PROVIDER:-google_vertex}
       LLM_MODEL: ${LLM_MODEL:-gemini-2.5-flash}
@@ -117,10 +118,13 @@ services:
       GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
       GOOGLE_CLOUD_LOCATION: ${GOOGLE_CLOUD_LOCATION:-global}
       GOOGLE_GENAI_USE_VERTEXAI: "true"
-      REDIS_HOST: redis
-      REDIS_PORT: "6379"
-      REDIS_DB: "0"
-      REDIS_URL: redis://redis:6379/0
+      GOOGLE_EMBEDDING_LOCATION: ${GOOGLE_EMBEDDING_LOCATION:-us-central1}
+      GOOGLE_EMBEDDING_MODEL: ${GOOGLE_EMBEDDING_MODEL:-gemini-embedding-001}
+      GOOGLE_EMBEDDING_DIMENSIONS: "1536"
+      GOOGLE_EMBEDDING_TIMEOUT: ${GOOGLE_EMBEDDING_TIMEOUT:-30}
+      GOOGLE_EMBEDDING_MAX_RETRIES: ${GOOGLE_EMBEDDING_MAX_RETRIES:-3}
+      RAG_EXTRACTOR_LLM_PROVIDER: ${RAG_EXTRACTOR_LLM_PROVIDER:-google_vertex}
+      RAG_EXTRACTOR_LLM_MODEL: ${RAG_EXTRACTOR_LLM_MODEL:-gemini-2.5-flash-lite}
     secrets:
       - postgres_password
       - source: google_service_account
