@@ -14,26 +14,19 @@ from aiogram.types import WebhookInfo
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 import httpx
+from sqlalchemy.orm import sessionmaker
 
 # Добавляем текущую директорию в PYTHONPATH для импорта модулей
 sys.path.append(str(Path(__file__).parent))
 
 from app.escalation_service import EscalationService
-from app.handlers import get_esc_service, router, set_esc_service
+from app.handlers import get_esc_service, router, set_esc_service, set_settings_provider
+from app.live_config import LiveTelegramSettingsProvider
 from app.middleware.session_middleware import SessionMiddleware
 from app_runtime import AppRuntime
-from config import (
-    BOT_TOKEN,
-    LOG_LEVEL,
-    MANAGER_GROUP_ID,
-    PORT,
-    REDIS_URL,
-    WEBHOOK_PATH,
-    WEBHOOK_URL,
-    apply_config_from_redis,
-)
-from shared.config_storage import ConfigStorage
+from config import LOG_LEVEL, PORT
 from shared.redis_client import get_redis_client
+from admin_panel.settings import SettingsStore
 
 # Настройка логирования
 logging.basicConfig(
@@ -46,6 +39,7 @@ logger = logging.getLogger(__name__)
 redis_client = None
 runtime: AppRuntime | None = None
 bot_instance: Bot | None = None
+settings_provider: LiveTelegramSettingsProvider | None = None
 
 
 def _env_bool(name: str, *, default: bool = False) -> bool:
@@ -57,7 +51,7 @@ def _env_bool(name: str, *, default: bool = False) -> bool:
 
 async def on_startup(dispatcher: Dispatcher) -> None:
     """Действия при запуске бота"""
-    global redis_client, runtime, bot_instance
+    global redis_client, runtime, bot_instance, settings_provider
     
     logger.info("=" * 50)
     logger.info("ON_STARTUP CALLED!")
@@ -76,23 +70,14 @@ async def on_startup(dispatcher: Dispatcher) -> None:
         redis_client = await get_redis_client()
         if redis_client:
             logger.info("Redis connected")
-            # Загружаем конфигурацию из Redis
-            config_storage = ConfigStorage(redis_client)
-            config = await config_storage.get_config()
-            if config:
-                apply_config_from_redis(config)
-                logger.info("Configuration applied from Redis")
     except Exception as e:
         logger.error(f"Redis initialization failed: {e}")
 
-    # Инициализация runtime
-    try:
-        runtime = AppRuntime.from_env()
-        dispatcher["runtime"] = runtime
-        dispatcher["memory"] = runtime.memory
-        logger.info("Runtime initialized")
-    except Exception as e:
-        logger.error(f"Failed to initialize runtime: {e}")
+    if runtime is None or settings_provider is None:
+        raise RuntimeError("bot runtime was not initialized before dispatcher startup")
+    dispatcher["runtime"] = runtime
+    dispatcher["memory"] = runtime.memory
+    current_settings = await settings_provider.get()
     
     # Настройка SessionMiddleware с Redis (если доступен)
     session_middleware = SessionMiddleware(redis_client)
@@ -122,9 +107,9 @@ async def on_startup(dispatcher: Dispatcher) -> None:
     logger.info("SessionMiddleware configured")
     
     # Инициализация сервиса эскалации
-    if MANAGER_GROUP_ID:
+    if current_settings.enable_escalation and current_settings.manager_group_id:
         try:
-            esc_service = EscalationService(bot, MANAGER_GROUP_ID)
+            esc_service = EscalationService(bot, current_settings.manager_group_id)
             set_esc_service(esc_service)
             
             # Проверяем, что сервис действительно установлен
@@ -136,26 +121,29 @@ async def on_startup(dispatcher: Dispatcher) -> None:
             else:
                 logger.error("Failed to verify escalation service")
             
-            logger.info(f"Escalation service initialized with group ID: {MANAGER_GROUP_ID}")
+            logger.info(
+                "Escalation service initialized with group ID: %s",
+                current_settings.manager_group_id,
+            )
         except Exception as e:
             logger.error(f"Failed to initialize escalation service: {e}", exc_info=True)
     else:
-        logger.warning("MANAGER_GROUP_ID not set! Escalation service disabled.")
+        logger.warning("Management group is not configured; escalation service disabled.")
     
     # Настройка вебхука
     try:
         webhook_info = await bot.get_webhook_info()
         logger.info(f"Current webhook info: {webhook_info}")
         
-        if webhook_info.url != WEBHOOK_URL:
+        if webhook_info.url != current_settings.webhook_url:
             await bot.set_webhook(
-                url=WEBHOOK_URL,
+                url=current_settings.webhook_url,
                 allowed_updates=dispatcher.resolve_used_update_types(),
                 drop_pending_updates=_env_bool("DROP_PENDING_UPDATES"),
             )
-            logger.info(f"Webhook set to {WEBHOOK_URL}")
+            logger.info("Webhook set to %s", current_settings.webhook_url)
         else:
-            logger.info(f"Webhook already set correctly to {WEBHOOK_URL}")
+            logger.info("Webhook already set correctly to %s", current_settings.webhook_url)
             
     except Exception as e:
         logger.error(f"Failed to set webhook: {e}")
@@ -229,12 +217,26 @@ async def healthcheck(_: web.Request) -> web.Response:
 
 def main() -> None:
     """Основная функция запуска бота"""
-    global bot_instance
+    global bot_instance, runtime, settings_provider
     
     try:
-        # Создаем бота с правильными настройками
+        runtime = AppRuntime.from_env()
+        encryption_key = os.getenv("CONFIG_SECRETS_ENCRYPTION_KEY") or os.getenv(
+            "MCP_SECRETS_ENCRYPTION_KEY"
+        )
+        if not encryption_key:
+            raise RuntimeError("CONFIG_SECRETS_ENCRYPTION_KEY is required")
+        settings_provider = LiveTelegramSettingsProvider(
+            SettingsStore(
+                sessionmaker(bind=runtime.database.engine, expire_on_commit=False),
+                encryption_key,
+            )
+        )
+        initial_settings = settings_provider.load_initial()
+        set_settings_provider(settings_provider)
+
         bot_instance = Bot(
-            token=BOT_TOKEN,
+            token=initial_settings.bot_token,
             default=DefaultBotProperties(parse_mode=ParseMode.HTML)
         )
         
@@ -260,7 +262,7 @@ def main() -> None:
             dispatcher=dp,
             bot=bot_instance,
         )
-        webhook_requests_handler.register(app, path=WEBHOOK_PATH)
+        webhook_requests_handler.register(app, path=initial_settings.webhook_path)
         
         # ВАЖНО: используем setup_application для правильной инициализации
         setup_application(app, dp, bot=bot_instance)
@@ -268,8 +270,11 @@ def main() -> None:
         # Запускаем сервер
         logger.info("=" * 50)
         logger.info(f"Starting webhook server on port {PORT}")
-        logger.info(f"Webhook URL: {WEBHOOK_URL}")
-        logger.info(f"Manager Group ID: {MANAGER_GROUP_ID or 'Not set'}")
+        logger.info("Webhook URL: %s", initial_settings.webhook_url)
+        logger.info(
+            "Manager Group ID: %s",
+            initial_settings.manager_group_id or "Not set",
+        )
         logger.info("=" * 50)
         
         web.run_app(app, host="0.0.0.0", port=PORT)
@@ -280,6 +285,9 @@ def main() -> None:
         logger.error(f"Server error: {e}")
         raise
     finally:
+        if runtime is not None:
+            runtime.close()
+            runtime = None
         logger.info("Server shutdown complete")
 
 

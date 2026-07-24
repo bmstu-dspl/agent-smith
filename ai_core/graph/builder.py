@@ -18,7 +18,9 @@ from ai_core.graph.nodes import (
     tool_output_guard,
 )
 from ai_core.graph.state import AgentState
+from ai_core.graph.prompts import AGENT_SYSTEM_PROMPT
 from ai_core.tools import ToolRegistry
+from admin_panel.settings import AgentSettings, RagSettings
 
 
 class StubGraph:
@@ -61,9 +63,14 @@ def _chunk_to_text(chunk: object) -> str:
     return ""
 
 
-def build_llm():
-    provider = os.getenv("LLM_PROVIDER", "google_vertex").strip().lower()
-    model = os.getenv("LLM_MODEL", "gemini-2.5-flash")
+def build_llm(settings: AgentSettings | None = None):
+    provider = (
+        settings.provider
+        if settings is not None
+        else os.getenv("LLM_PROVIDER", "google_vertex").strip().lower()
+    )
+    model = settings.model if settings is not None else os.getenv("LLM_MODEL", "gemini-2.5-flash")
+    temperature = settings.temperature if settings is not None else 0.2
 
     if provider in {"google_vertex", "vertex"}:
         project = os.getenv("GOOGLE_CLOUD_PROJECT")
@@ -77,7 +84,7 @@ def build_llm():
             vertexai=True,
             project=project,
             location=os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1"),
-            temperature=0.2,
+            temperature=temperature,
         )
 
     if provider == "openai":
@@ -86,7 +93,7 @@ def build_llm():
 
         return ChatOpenAI(
             model=model,
-            temperature=0.2,
+            temperature=temperature,
         )
 
     raise ValueError(f"Unsupported LLM_PROVIDER: {provider}")
@@ -117,17 +124,41 @@ def build_rag_extractor_llm(default_llm):
     raise ValueError(f"Unsupported RAG_EXTRACTOR_LLM_PROVIDER: {provider}")
 
 
-def build_langgraph(llm, tool_registry: ToolRegistry, checkpointer=None, rag_memory=None, rag_extractor_llm=None):
+def build_langgraph(
+    llm,
+    tool_registry: ToolRegistry,
+    checkpointer=None,
+    rag_memory=None,
+    rag_extractor_llm=None,
+    *,
+    agent_settings: AgentSettings | None = None,
+    rag_settings: RagSettings | None = None,
+):
     tools = tool_registry.get_tools()
     agent_llm = llm.bind_tools(tools) if tools else llm
 
     workflow = StateGraph(AgentState)
 
     workflow.add_node("input_guard", input_guard)
-    workflow.add_node("agent", AgentNode(agent_llm))
+    workflow.add_node(
+        "agent",
+        AgentNode(
+            agent_llm,
+            system_prompt=agent_settings.system_prompt if agent_settings else AGENT_SYSTEM_PROMPT,
+            rag_instructions=rag_settings.additional_instructions if rag_settings else "",
+        ),
+    )
     if rag_memory is not None:
         workflow.add_node("rag_query_extractor", RagQueryExtractorNode(rag_extractor_llm or llm))
-        workflow.add_node("rag_retrieval", RagRetrievalNode(rag_memory))
+        workflow.add_node(
+            "rag_retrieval",
+            RagRetrievalNode(
+                rag_memory,
+                limit=rag_settings.limit if rag_settings else 8,
+                max_context_chars=rag_settings.max_context_chars if rag_settings else 12_000,
+                retrieval_mode=rag_settings.retrieval_mode if rag_settings else "hybrid",
+            ),
+        )
         next_node_after_guard = "rag_query_extractor"
         workflow.add_edge("rag_query_extractor", "rag_retrieval")
         workflow.add_edge("rag_retrieval", "agent")
@@ -238,18 +269,30 @@ class AgentGraph(StubGraph):
             yield "Не удалось сформировать ответ. Передаю обращение оператору."
 
 
-def build_graph(checkpointer=None, tool_registry: ToolRegistry | None = None, rag_memory=None) -> StubGraph:
-    llm = build_llm()
+def build_graph(
+    checkpointer=None,
+    tool_registry: ToolRegistry | None = None,
+    rag_memory=None,
+    *,
+    agent_settings: AgentSettings | None = None,
+    rag_settings: RagSettings | None = None,
+) -> StubGraph:
+    llm = build_llm(agent_settings)
     if llm is None:
         return StubGraph()
 
     registry = tool_registry or ToolRegistry()
-    rag_extractor_llm = build_rag_extractor_llm(llm) if rag_memory is not None else None
+    effective_rag_memory = (
+        rag_memory if rag_settings is None or rag_settings.enabled else None
+    )
+    rag_extractor_llm = build_rag_extractor_llm(llm) if effective_rag_memory is not None else None
     graph = build_langgraph(
         llm,
         registry,
         checkpointer=checkpointer,
-        rag_memory=rag_memory,
+        rag_memory=effective_rag_memory,
         rag_extractor_llm=rag_extractor_llm,
+        agent_settings=agent_settings,
+        rag_settings=rag_settings,
     )
     return AgentGraph(graph, registry)

@@ -208,7 +208,12 @@ async def _stream_fallback_message(session_id: str, text: str) -> AsyncIterator[
 
 @router.post("/process")
 async def process_message(payload: IncomingMessage, request: Request) -> StreamingResponse:
-    graph = request.app.state.graph
+    graph_provider = getattr(request.app.state, "graph_provider", None)
+    graph = (
+        await graph_provider.get_graph()
+        if graph_provider is not None
+        else request.app.state.graph
+    )
     memory = request.app.state.memory
 
     if payload.message_type == "callback":

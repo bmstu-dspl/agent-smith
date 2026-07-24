@@ -1,22 +1,29 @@
-FROM python:3.14-slim 
- 
-WORKDIR /app 
- 
-# Установка uv 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/ 
- 
-# Копируем зависимости 
-COPY pyproject.toml uv.lock ./ 
- 
-# Устанавливаем зависимости 
-RUN uv sync --no-dev --frozen 
- 
-# Копируем код 
-COPY ai_core/ ai_core/ 
-COPY shared/ shared/ 
-COPY memory/ memory/ 
-COPY DB/ DB/ 
- 
-ENV PYTHONPATH=/app 
- 
-CMD ["uv", "run", "uvicorn", "ai_core.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# syntax=docker/dockerfile:1.7
+
+ARG PYTHON_VERSION=3.14
+ARG UV_VERSION=0.11.25
+
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
+FROM python:${PYTHON_VERSION}-slim
+
+COPY --from=uv /uv /usr/local/bin/uv
+WORKDIR /app
+ENV UV_NO_DEV=1 \
+    UV_PYTHON_DOWNLOADS=0 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app
+
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project
+COPY . .
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev
+
+RUN groupadd --gid 10001 app \
+    && useradd --uid 10001 --gid app --home-dir /app --no-create-home app \
+    && chown -R app:app /app
+USER 10001:10001
+EXPOSE 8000
+CMD ["python", "-m", "uvicorn", "ai_core.main:app", "--host", "0.0.0.0", "--port", "8000"]

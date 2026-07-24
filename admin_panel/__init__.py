@@ -1,17 +1,13 @@
-"""Административная панель для управления ботом"""
+"""Deployable administration service for Agent Smith."""
 
-from .auth import SimpleAdminAuth
-from .storage import AdminStorage
-from .models import BotConfig, PluginConfig
-from .plugin_system import PluginRegistry, plugin_registry
-from .views import create_admin_app
+from .auth_store import AdminAuthStore, AdminIdentity
+from .settings import AgentSettings, RagSettings, SettingsStore, TelegramSettings
 
 __all__ = [
-    "SimpleAdminAuth",
-    "AdminStorage",
-    "BotConfig",
-    "PluginConfig",
-    "PluginRegistry",
-    "plugin_registry",
-    "create_admin_app",
+    "AdminAuthStore",
+    "AdminIdentity",
+    "AgentSettings",
+    "RagSettings",
+    "SettingsStore",
+    "TelegramSettings",
 ]

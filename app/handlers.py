@@ -21,8 +21,7 @@ from app.middleware.session_middleware import SessionMiddleware
 from app.models import IncomingMessage
 from app.escalation_service import EscalationService
 
-# Импортируем конфигурацию
-from config import MANAGER_GROUP_ID, AI_AGENT_URL
+from app.live_config import LiveTelegramSettingsProvider
 
 router = Router()
 router.message.middleware(SessionMiddleware())
@@ -31,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 # Глобальная переменная для сервиса эскалации
 _esc_service: EscalationService = None
+_settings_provider: LiveTelegramSettingsProvider | None = None
 
 
 # Определяем состояния
@@ -50,6 +50,17 @@ def set_esc_service(service: EscalationService):
 def get_esc_service():
     """Получить сервис эскалации"""
     return _esc_service
+
+
+def set_settings_provider(provider: LiveTelegramSettingsProvider) -> None:
+    global _settings_provider
+    _settings_provider = provider
+
+
+async def _get_runtime_settings():
+    if _settings_provider is None:
+        raise RuntimeError("Telegram settings provider is not initialized")
+    return await _settings_provider.get()
 
 
 def escape_markdown(text: str) -> str:
@@ -77,6 +88,11 @@ async def cmd_start(message: Message, state: FSMContext):
 async def cmd_help(message: Message, state: FSMContext):
     """Команда для вызова менеджера"""
     esc_service = get_esc_service()
+    runtime_settings = await _get_runtime_settings()
+    if esc_service is not None:
+        esc_service.update_manager_group_id(
+            runtime_settings.manager_group_id if runtime_settings.enable_escalation else None
+        )
     
     if esc_service is None:
         await message.answer(
@@ -267,7 +283,7 @@ async def cmd_get_group_id(message: Message):
             f"Group info:\n"
             f"Name: {chat_title}\n"
             f"ID: {chat_id}\n\n"
-            f"Add this ID to .env as MANAGER_GROUP_ID"
+            f"Save this ID in Admin panel → Telegram settings → Management group ID"
         )
     else:
         await message.answer("This command works only in groups.")
@@ -275,13 +291,17 @@ async def cmd_get_group_id(message: Message):
 
 # ==================== ОБРАБОТЧИК СООБЩЕНИЙ ИЗ ГРУППЫ МЕНЕДЖЕРОВ ====================
 
-@router.message(F.chat.id == MANAGER_GROUP_ID)
+@router.message(F.chat.type.in_({"group", "supergroup"}))
 async def handle_manager_message(message: Message):
     """
     Обрабатывает сообщения от менеджеров в группе.
     - Сообщения в тредах пересылаются пользователям
     - Сообщения в общем чате игнорируются (кроме команд)
     """
+    runtime_settings = await _get_runtime_settings()
+    if message.chat.id != runtime_settings.manager_group_id:
+        return
+
     # Игнорируем команды
     if message.text and message.text.startswith('/'):
         return
@@ -366,7 +386,7 @@ async def handle_user_with_manager(
         if thread_id:
             # Отправляем в тред
             await message.bot.send_message(
-                chat_id=MANAGER_GROUP_ID,
+                chat_id=esc_service.manager_group_id,
                 message_thread_id=thread_id,
                 text=f"{safe_name}:\n{message.text}"
             )
@@ -374,7 +394,7 @@ async def handle_user_with_manager(
         else:
             # Если треда нет
             await message.bot.send_message(
-                chat_id=MANAGER_GROUP_ID,
+                chat_id=esc_service.manager_group_id,
                 text=f"{safe_name}:\n{message.text}\n\n"
                      f"Тред не создан! Менеджер должен принять запрос."
             )
@@ -411,10 +431,11 @@ async def handle_user_default(
     last_edit_text = ""
 
     try:
+        runtime_settings = await _get_runtime_settings()
         async with httpx.AsyncClient(timeout=60.0) as client:
             async with client.stream(
                 "POST",
-                AI_AGENT_URL + "/agent/process",
+                runtime_settings.ai_agent_url.rstrip("/") + "/agent/process",
                 json=incoming.model_dump(mode="json")
             ) as response:
                 response.raise_for_status()
@@ -509,7 +530,7 @@ async def handle_take_ticket(callback: CallbackQuery, state: FSMContext):
             try:
                 safe_name = escape_markdown(escalation['user_full_name'])
                 await callback.bot.send_message(
-                    chat_id=MANAGER_GROUP_ID,
+                    chat_id=esc_service.manager_group_id,
                     message_thread_id=escalation["thread_id"],
                     text=(
                         f"Начинаем общение с пользователем {safe_name}.\n\n"
@@ -573,6 +594,7 @@ async def handle_callback_query(
     sent_message = await callback.message.answer("⏳ Обработка действия...")
 
     try:
+        runtime_settings = await _get_runtime_settings()
         async with httpx.AsyncClient(timeout=30.0) as client:
             payload = {
                 "session_id": session_id or f"temp_{user_id}",
@@ -594,7 +616,7 @@ async def handle_callback_query(
 
             async with client.stream(
                 "POST",
-                AI_AGENT_URL + "/agent/process",
+                runtime_settings.ai_agent_url.rstrip("/") + "/agent/process",
                 json=payload
             ) as response:
                 response.raise_for_status()

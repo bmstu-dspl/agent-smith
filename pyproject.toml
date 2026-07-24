@@ -22,10 +22,18 @@ dependencies = [
     "langgraph-checkpoint-postgres>=3.1.0",
     "aiogram[redis]>=3.29.0",
     "redis>=5.0.0",
-    "aioredis>=2.0.0",
     "starlette-admin>=0.17.0,<0.18.0",
     "bcrypt>=4.0.0",
     "cryptography>=49.0.0",
     "pypdf>=6.0.0",
     "python-docx>=1.2.0",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
