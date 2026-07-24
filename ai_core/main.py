@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import sessionmaker
 
 from memory import MemoryManager
-from ai_core.graph.builder import build_graph, rebuild_graph
+from ai_core.graph.builder import build_graph
 from ai_core.api.routes import messages
 from ai_core.runtime_config import LiveGraphProvider
 from app_runtime import AppRuntime

@@ -5,14 +5,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select, update, text
+from sqlalchemy import select, update
 
 from DB import PostgresDatabase
 
 from ._crypto import decrypt_json, encrypt_json, sanitize_error_message
 from ._models import McpServerModel
-
-NOTIFY_CHANNEL = "mcp_servers_changed"
 
 @dataclass(slots=True, frozen=True)
 class McpServer:
@@ -58,7 +56,6 @@ class McpServerStore:
                     updated_at=now,
                 )
             )
-            self._notify_change(session)
         return server_id
 
     def get_server(self, server_id: str) -> McpServer | None:
@@ -82,7 +79,6 @@ class McpServerStore:
         )
         with self._database.session() as session:
             session.execute(statement)
-            self._notify_change(session)
 
     def update_connection_status(
         self, server_id: str, *, success: bool, error_message: str | None = None
@@ -118,20 +114,12 @@ class McpServerStore:
         statement = update(McpServerModel).where(McpServerModel.server_id == server_id).values(**values)
         with self._database.session() as session:
             session.execute(statement)
-            self._notify_change(session)
 
     def delete_server(self, server_id: str) -> None:
         with self._database.session() as session:
             model = session.get(McpServerModel, server_id)
             if model is not None:
                 session.delete(model)
-                self._notify_change(session)
-
-    def _notify_change(self, session) -> None:
-        session.execute(text(f"NOTIFY {NOTIFY_CHANNEL};"))
-
-
-
 def _to_dataclass(model: McpServerModel) -> McpServer:
     return McpServer(
         server_id=model.server_id,
