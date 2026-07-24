@@ -125,6 +125,11 @@ services:
       GOOGLE_EMBEDDING_MAX_RETRIES: ${GOOGLE_EMBEDDING_MAX_RETRIES:-3}
       RAG_EXTRACTOR_LLM_PROVIDER: ${RAG_EXTRACTOR_LLM_PROVIDER:-google_vertex}
       RAG_EXTRACTOR_LLM_MODEL: ${RAG_EXTRACTOR_LLM_MODEL:-gemini-2.5-flash-lite}
+      CONFIG_SECRETS_ENCRYPTION_KEY: ${CONFIG_SECRETS_ENCRYPTION_KEY:-${MCP_SECRETS_ENCRYPTION_KEY:?CONFIG_SECRETS_ENCRYPTION_KEY or MCP_SECRETS_ENCRYPTION_KEY is required}}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_DB: "0"
+      REDIS_URL: redis://redis:6379/0
     secrets:
       - postgres_password
       - source: google_service_account
@@ -155,6 +160,58 @@ services:
           cpus: ${AI_AGENT_CPU_LIMIT:-1.0}
           memory: ${AI_AGENT_MEMORY_LIMIT:-512M}
 
+  admin:
+    <<: *application
+    restart: unless-stopped
+    command:
+      - python
+      - -m
+      - uvicorn
+      - admin_panel.app:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8001"
+    environment:
+      <<: *database-environment
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      ADMIN_BOOTSTRAP_USERNAME: ${ADMIN_BOOTSTRAP_USERNAME:-}
+      ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-}
+      ADMIN_SECURE_COOKIES: ${ADMIN_SECURE_COOKIES:-true}
+      CONFIG_SECRETS_ENCRYPTION_KEY: ${CONFIG_SECRETS_ENCRYPTION_KEY:-${MCP_SECRETS_ENCRYPTION_KEY:?CONFIG_SECRETS_ENCRYPTION_KEY or MCP_SECRETS_ENCRYPTION_KEY is required}}
+      MCP_SECRETS_ENCRYPTION_KEY: ${MCP_SECRETS_ENCRYPTION_KEY:?MCP_SECRETS_ENCRYPTION_KEY is required, see mcp_registry/README.md}
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/google_service_account.json
+      GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT:-}
+      GOOGLE_EMBEDDING_LOCATION: ${GOOGLE_EMBEDDING_LOCATION:-us-central1}
+      GOOGLE_EMBEDDING_MODEL: ${GOOGLE_EMBEDDING_MODEL:-gemini-embedding-001}
+      GOOGLE_EMBEDDING_DIMENSIONS: "1536"
+      GOOGLE_EMBEDDING_TIMEOUT: ${GOOGLE_EMBEDDING_TIMEOUT:-30}
+      GOOGLE_EMBEDDING_MAX_RETRIES: ${GOOGLE_EMBEDDING_MAX_RETRIES:-3}
+    secrets:
+      - postgres_password
+      - source: google_service_account
+        target: google_service_account.json
+    networks:
+      - backend
+      - egress
+    expose:
+      - "8001"
+    ports:
+      - "127.0.0.1:${ADMIN_PORT:-8001}:8001"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
   bot:
     <<: *application
     restart: unless-stopped
@@ -177,6 +234,7 @@ services:
       GOOGLE_EMBEDDING_DIMENSIONS: "1536"
       GOOGLE_EMBEDDING_TIMEOUT: ${GOOGLE_EMBEDDING_TIMEOUT:-30}
       GOOGLE_EMBEDDING_MAX_RETRIES: ${GOOGLE_EMBEDDING_MAX_RETRIES:-3}
+      CONFIG_SECRETS_ENCRYPTION_KEY: ${CONFIG_SECRETS_ENCRYPTION_KEY:-${MCP_SECRETS_ENCRYPTION_KEY:?CONFIG_SECRETS_ENCRYPTION_KEY or MCP_SECRETS_ENCRYPTION_KEY is required}}
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       REDIS_DB: "0"
@@ -245,6 +303,8 @@ services:
       - edge
     depends_on:
       bot:
+        condition: service_healthy
+      admin:
         condition: service_healthy
 
 secrets:

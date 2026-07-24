@@ -5,6 +5,11 @@
 {$APP_DOMAIN} {
 	encode zstd gzip
 
+	@admin path /admin /admin/*
+	handle @admin {
+		reverse_proxy admin:8001
+	}
+
 	@webhook path /webhook/*
 	handle @webhook {
 		reverse_proxy bot:8080

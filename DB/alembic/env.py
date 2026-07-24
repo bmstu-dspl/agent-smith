@@ -12,6 +12,7 @@ from DB._orm import Base
 from RAG._models import ChunkModel, DocumentModel, DocumentVersionModel
 from memory._models import MessageModel, SystemSettingModel
 from mcp_registry._models import McpServerModel
+from admin_panel.db_models import AdminSessionModel, AdminUserModel, ServiceSettingsModel
 _MODELS = (
     GraphNodeModel,
     GraphEdgeModel,
@@ -21,6 +22,9 @@ _MODELS = (
     MessageModel,       
     SystemSettingModel,
     McpServerModel,
+    AdminUserModel,
+    AdminSessionModel,
+    ServiceSettingsModel,
 )
 target_metadata = Base.metadata
 

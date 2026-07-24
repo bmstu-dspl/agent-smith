@@ -31,18 +31,31 @@ def route_after_input_guard(state: AgentState) -> Literal["agent", "end"]:
 
 
 class AgentNode:
-    def __init__(self, llm) -> None:
+    def __init__(
+        self,
+        llm,
+        *,
+        system_prompt: str = AGENT_SYSTEM_PROMPT,
+        rag_instructions: str = "",
+    ) -> None:
         self.llm = llm
+        self.system_prompt = system_prompt
+        self.rag_instructions = rag_instructions
 
     async def __call__(self, state: AgentState) -> dict:
-        messages = [SystemMessage(content=AGENT_SYSTEM_PROMPT)]
+        messages = [SystemMessage(content=self.system_prompt)]
         rag_context = state.get("rag_context") or ""
         if rag_context:
+            additional = (
+                f"\n\nДополнительные правила использования базы знаний:\n{self.rag_instructions}"
+                if self.rag_instructions
+                else ""
+            )
             messages.append(SystemMessage(
                 content=("Контекст базы знаний для текущего ответа. "
                          "Используй его только если он релевантен вопросу пользователя. "
                          "Если в контексте нет ответа, не выдумывай.\n\n"
-                         f"{rag_context}")
+                         f"{rag_context}{additional}")
             ))
         messages.extend(state.get("messages", []))
         response = await self.llm.ainvoke(messages)
@@ -50,8 +63,18 @@ class AgentNode:
 
 
 class RagRetrievalNode:
-    def __init__(self, memory) -> None:
+    def __init__(
+        self,
+        memory,
+        *,
+        limit: int = 8,
+        max_context_chars: int = 12_000,
+        retrieval_mode: str = "hybrid",
+    ) -> None:
         self.memory = memory
+        self.limit = limit
+        self.max_context_chars = max_context_chars
+        self.retrieval_mode = retrieval_mode
 
     async def __call__(self, state: AgentState) -> dict:
         rag_query = state.get("rag_query", "").strip()
@@ -62,8 +85,9 @@ class RagRetrievalNode:
         query = BuildAgentContextQuery(
             tenant_id=tenant_id,
             query=rag_query,
-            limit=8,
-            max_context_chars=12_000,
+            limit=self.limit,
+            max_context_chars=self.max_context_chars,
+            retrieval_mode=self.retrieval_mode,
         )
         context = await asyncio.to_thread(self.memory.build_agent_context, query)
         return {"rag_context": context.context_text}

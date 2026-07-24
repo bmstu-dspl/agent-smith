@@ -22,6 +22,10 @@ class EscalationService:
             logger.info(f"EscalationService created with group {manager_group_id}")
         else:
             logger.warning("EscalationService created WITHOUT manager group ID!")
+
+    def update_manager_group_id(self, manager_group_id: int | None) -> None:
+        self.manager_group_id = manager_group_id
+        self.is_initialized = bool(manager_group_id)
     
     async def escalate_to_managers(
         self, 
