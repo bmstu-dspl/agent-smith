@@ -94,7 +94,33 @@ model, re-vectorize every active document version before relying on semantic sea
 spaces from different models are not compatible; lexical search remains available during the
 backfill.
 
-`update.sh` refuses a dirty worktree or wrong branch, performs only `git pull --ff-only`, builds the application image locally from the checked-out source, labels it with the full Git SHA, and then recreates services. No application image is pulled from a Docker registry. PostgreSQL, Caddy, Python, and uv remain pinned third-party base images and are still obtained from their image registries.
+`update.sh` refuses a dirty worktree, wrong branch, concurrent deployment, or
+non-fast-forward update. It fetches the target branch, optionally verifies
+`DEPLOY_EXPECTED_SHA`, creates a PostgreSQL backup when the existing database is
+running, builds images, applies migrations, waits for every Compose service to
+become healthy, and probes both the local admin service and public HTTPS endpoint.
+It prints a short success summary or service status and recent logs on failure.
+No application image is pulled from a Docker registry. PostgreSQL, Caddy, Python,
+and uv remain pinned third-party base images and are still obtained from their
+image registries.
+
+Useful deployment controls:
+
+```bash
+# CI/CD can guarantee that exactly the triggering revision is deployed.
+DEPLOY_EXPECTED_SHA=<full-git-sha> ./deploy/update.sh
+
+# Extend the health deadline for a slow host.
+DEPLOY_WAIT_TIMEOUT=420 ./deploy/update.sh
+
+# Emergency-only; normal deployments should retain the database backup.
+DEPLOY_SKIP_BACKUP=true ./deploy/update.sh
+```
+
+The final machine-readable line is either `DEPLOY_STATUS=success ...` or
+`DEPLOY_STATUS=failed ...`; the process exit code remains the authoritative
+pipeline result. Failed deployments are not automatically rolled back because a
+completed database migration may not be compatible with older code.
 
 Migrations must follow expand/contract rules: first add backward-compatible schema, then deploy code, then remove obsolete schema in a later release. A failed migration blocks bot and agent startup.
 
