@@ -8,6 +8,8 @@ COPY --from=ghcr.io/astral-sh/uv:0.11.25 /uv /uvx /bin/
 # Копируем зависимости
 COPY pyproject.toml uv.lock ./
 
+# Устанавливаем зависимости
+RUN uv sync --no-dev --frozen
 
 # Копируем код
 COPY . .
