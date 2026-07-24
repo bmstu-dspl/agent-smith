@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import hashlib
 import os
 
 from admin_panel.settings import SettingsStore
@@ -18,7 +19,8 @@ class TelegramRuntimeSettings:
 
     @property
     def webhook_path(self) -> str:
-        return f"/webhook/{self.bot_token}"
+        token_digest = hashlib.sha256(self.bot_token.encode("utf-8")).hexdigest()
+        return f"/webhook/{token_digest}"
 
     @property
     def webhook_url(self) -> str:

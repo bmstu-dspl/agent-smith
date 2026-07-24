@@ -40,9 +40,9 @@ cp .env.example .env
    make up
 ```
    При первом запуске задайте `ADMIN_BOOTSTRAP_USERNAME` и
-   `ADMIN_BOOTSTRAP_PASSWORD`. Панель доступна только локально по адресу
-   `https://` не используется: откройте `http://127.0.0.1:8001/admin`.
-   После создания первого администратора удалите bootstrap-пароль из `.env`.
+   `ADMIN_BOOTSTRAP_PASSWORD`. Caddy публикует панель на том же домене, что и
+   Telegram webhook: `https://<APP_DOMAIN>/admin`. После создания первого
+   администратора удалите bootstrap-пароль из `.env`.
 4. Остановить:
 ```bash
    docker compose down

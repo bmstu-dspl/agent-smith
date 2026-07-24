@@ -42,7 +42,11 @@ async def test_bot_reads_durable_settings_before_start_and_refreshes_runtime_val
 
     initial = provider.load_initial()
     assert initial.bot_token == "db-token"
-    assert initial.webhook_url == "https://bot.example.test/webhook/db-token"
+    assert initial.webhook_url == (
+        "https://bot.example.test/webhook/"
+        "caf4beb67df21e835c8514c03217c01f9a24bbb43cd4e0ed85dcd48b8edbe495"
+    )
+    assert "db-token" not in initial.webhook_url
 
     store.save_telegram(
         TelegramSettingsUpdate(

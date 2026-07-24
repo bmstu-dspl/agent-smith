@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 
@@ -35,7 +36,7 @@ except ValueError:
 MANAGER_GROUP_ID = int(os.getenv('MANAGER_GROUP_ID', 0))
 AI_AGENT_URL = os.getenv('AI_AGENT_URL', 'http://ai_agent:8000')
 WEBHOOK_HOST = os.getenv('WEBHOOK_HOST', 'https://sycamore-glaucoma-citadel.ngrok-free.dev')
-WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
+WEBHOOK_PATH = f"/webhook/{hashlib.sha256(BOT_TOKEN.encode('utf-8')).hexdigest()}"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 PORT = int(os.getenv('PORT', 8080))
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
@@ -68,7 +69,7 @@ def apply_config_from_redis(config: dict):
         LOG_LEVEL = config['log_level']
     
     # Обновляем зависимые переменные
-    WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
+    WEBHOOK_PATH = f"/webhook/{hashlib.sha256(BOT_TOKEN.encode('utf-8')).hexdigest()}"
     WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
     
     logger.info(f"Config updated from Redis: webhook={WEBHOOK_URL}")
