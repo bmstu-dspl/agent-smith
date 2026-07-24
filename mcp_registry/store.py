@@ -12,7 +12,6 @@ from DB import PostgresDatabase
 from ._crypto import decrypt_json, encrypt_json, sanitize_error_message
 from ._models import McpServerModel
 
-
 @dataclass(slots=True, frozen=True)
 class McpServer:
     server_id: str
@@ -62,6 +61,7 @@ class McpServerStore:
     def get_server(self, server_id: str) -> McpServer | None:
         with self._database.session() as session:
             model = session.get(McpServerModel, server_id)
+
             return _to_dataclass(model) if model else None
 
     def list_servers(self, *, only_active: bool = False) -> list[McpServer]:
@@ -120,8 +120,6 @@ class McpServerStore:
             model = session.get(McpServerModel, server_id)
             if model is not None:
                 session.delete(model)
-
-
 def _to_dataclass(model: McpServerModel) -> McpServer:
     return McpServer(
         server_id=model.server_id,
@@ -134,3 +132,4 @@ def _to_dataclass(model: McpServerModel) -> McpServer:
         last_connected_at=model.last_connected_at,
         error_message=model.error_message,
     )
+

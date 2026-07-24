@@ -112,6 +112,7 @@ services:
       <<: *database-environment
       RUN_DB_MIGRATIONS: "false"
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      MCP_SECRETS_ENCRYPTION_KEY: ${MCP_SECRETS_ENCRYPTION_KEY:?MCP_SECRETS_ENCRYPTION_KEY must be set}
       LLM_PROVIDER: ${LLM_PROVIDER:-google_vertex}
       LLM_MODEL: ${LLM_MODEL:-gemini-2.5-flash}
       GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/google_service_account.json
@@ -137,6 +138,7 @@ services:
     networks:
       - backend
       - egress
+      - mcp-network
     expose:
       - "8000"
     healthcheck:
@@ -326,3 +328,5 @@ networks:
     internal: true
   egress:
   edge:
+  mcp-network:
+    external: true

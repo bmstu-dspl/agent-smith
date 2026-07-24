@@ -72,3 +72,7 @@ async def test_committed_agent_settings_rebuild_graph_before_next_request() -> N
     )
     assert second is await provider.get_graph()
     assert len(built_with) == 2
+
+    provider.invalidate()
+    assert await provider.get_graph() == second
+    assert len(built_with) == 3

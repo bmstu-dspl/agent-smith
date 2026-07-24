@@ -24,6 +24,10 @@ class LiveGraphProvider:
         self._revisions: tuple[int, int] | None = None
         self._reload_lock = asyncio.Lock()
 
+    def invalidate(self) -> None:
+        """Force the next request to rebuild for non-settings dependencies."""
+        self._revisions = None
+
     async def get_graph(self) -> Any:
         agent_record, rag_record = await asyncio.gather(
             asyncio.to_thread(self._settings_store.get_agent),

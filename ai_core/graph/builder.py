@@ -7,6 +7,9 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
+from mcp_registry import McpServerStore
+from mcp_registry.client import McpToolProvider
+
 from ai_core.contracts.schemas import Button, IncomingMessage
 from ai_core.graph.nodes import (
     AgentNode,
@@ -273,6 +276,7 @@ def build_graph(
     checkpointer=None,
     tool_registry: ToolRegistry | None = None,
     rag_memory=None,
+    mcp_tools: list | None = None,
     *,
     agent_settings: AgentSettings | None = None,
     rag_settings: RagSettings | None = None,
@@ -282,6 +286,8 @@ def build_graph(
         return StubGraph()
 
     registry = tool_registry or ToolRegistry()
+    if mcp_tools:
+        registry.register_many(mcp_tools)
     effective_rag_memory = (
         rag_memory if rag_settings is None or rag_settings.enabled else None
     )
@@ -296,3 +302,20 @@ def build_graph(
         rag_settings=rag_settings,
     )
     return AgentGraph(graph, registry)
+
+async def rebuild_graph(
+    mcp_store: McpServerStore,
+    checkpointer=None,
+    rag_memory=None,
+    *,
+    agent_settings: AgentSettings | None = None,
+    rag_settings: RagSettings | None = None,
+) -> StubGraph:
+    mcp_tools = await McpToolProvider(mcp_store).get_all_tools()
+    return build_graph(
+        checkpointer=checkpointer,
+        rag_memory=rag_memory,
+        mcp_tools=mcp_tools,
+        agent_settings=agent_settings,
+        rag_settings=rag_settings,
+    )
