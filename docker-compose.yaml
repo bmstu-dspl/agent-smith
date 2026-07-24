@@ -138,6 +138,7 @@ services:
     networks:
       - backend
       - egress
+      - mcp-network
     expose:
       - "8000"
     healthcheck:
@@ -327,3 +328,5 @@ networks:
     internal: true
   egress:
   edge:
+  mcp-network:
+    external: true
