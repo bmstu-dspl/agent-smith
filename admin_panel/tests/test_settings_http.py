@@ -133,10 +133,26 @@ def test_agent_and_rag_settings_use_explicit_validated_areas() -> None:
                 "model": "gpt-5-mini",
                 "temperature": 0.3,
                 "system_prompt": "You assist hotel guests.",
+                "primary_timezone": "Europe/Moscow",
             },
         )
         assert agent.status_code == 200
         assert agent.json()["revision"] == 1
+        assert agent.json()["primary_timezone"] == "Europe/Moscow"
+
+        invalid_timezone = client.put(
+            "/admin/api/settings/agent",
+            headers={"X-CSRF-Token": csrf},
+            json={
+                "revision": 1,
+                "provider": "openai",
+                "model": "gpt-5-mini",
+                "temperature": 0.3,
+                "system_prompt": "You assist hotel guests.",
+                "primary_timezone": "Mars/Olympus_Mons",
+            },
+        )
+        assert invalid_timezone.status_code == 422
 
         invalid_rag = client.put(
             "/admin/api/settings/rag",
@@ -170,6 +186,10 @@ def test_agent_and_rag_settings_use_explicit_validated_areas() -> None:
         )
         assert rag.status_code == 200
         assert client.get("/admin/api/settings/agent").json()["model"] == "gpt-5-mini"
+        assert (
+            client.get("/admin/api/settings/agent").json()["primary_timezone"]
+            == "Europe/Moscow"
+        )
         assert (
             client.get("/admin/api/settings/rag").json()["additional_instructions"]
             == "Prefer approved policies."

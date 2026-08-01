@@ -1,7 +1,38 @@
+from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
+
+
+def create_current_datetime_tool(
+    primary_timezone: str,
+    *,
+    clock: Callable[[], datetime] | None = None,
+):
+    zone = ZoneInfo(primary_timezone)
+    now = clock or (lambda: datetime.now(timezone.utc))
+
+    @tool("get_current_datetime")
+    async def get_current_datetime() -> dict:
+        """Return the actual current date and time in UTC and the configured primary timezone.
+
+        Call this before interpreting relative or incomplete dates, deciding whether
+        a date is in the past or future, or invoking a date-sensitive external tool.
+        """
+        utc_now = now().astimezone(timezone.utc).replace(microsecond=0)
+        primary_now = utc_now.astimezone(zone)
+        return {
+            "utc_datetime": utc_now.isoformat(),
+            "primary_datetime": primary_now.isoformat(),
+            "primary_date": primary_now.date().isoformat(),
+            "primary_time": primary_now.time().isoformat(),
+            "primary_timezone": primary_timezone,
+        }
+
+    return get_current_datetime
 
 
 class RequestClarificationInput(BaseModel):
@@ -94,8 +125,9 @@ async def mark_task_status(status: str, reason: str | None = None) -> dict:
     }
 
 
-def get_core_tools():
+def get_core_tools(primary_timezone: str = "UTC"):
     return [
+        create_current_datetime_tool(primary_timezone),
         ask_user,
         request_clarification,
         handoff_to_operator,

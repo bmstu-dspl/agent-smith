@@ -4,7 +4,8 @@ from ai_core.tools.core_tools import get_core_tools
 
 
 class ToolRegistry:
-    def __init__(self) -> None:
+    def __init__(self, *, primary_timezone: str = "UTC") -> None:
+        self._primary_timezone = primary_timezone
         self._plugin_tools: list[BaseTool] = []
 
     def register_many(self, tools: list[BaseTool]) -> None:
@@ -12,7 +13,7 @@ class ToolRegistry:
 
     def get_tools(self) -> list[BaseTool]:
         return [
-            *get_core_tools(),
+            *get_core_tools(self._primary_timezone),
             *self._plugin_tools,
         ]
 

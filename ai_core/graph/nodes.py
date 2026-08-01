@@ -2,7 +2,11 @@ import asyncio
 import json
 from typing import Literal
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from ai_core.graph.prompts import AGENT_SYSTEM_PROMPT, RAG_QUERY_EXTRACTOR_PROMPT
+from ai_core.graph.prompts import (
+    CORE_SYSTEM_PROMPT,
+    DEFAULT_PERSONA_PROMPT,
+    RAG_QUERY_EXTRACTOR_PROMPT,
+)
 from ai_core.graph.state import AgentState
 from RAG import BuildAgentContextQuery
 from pydantic import ValidationError
@@ -35,15 +39,20 @@ class AgentNode:
         self,
         llm,
         *,
-        system_prompt: str = AGENT_SYSTEM_PROMPT,
+        persona_prompt: str = DEFAULT_PERSONA_PROMPT,
+        core_prompt: str = CORE_SYSTEM_PROMPT,
         rag_instructions: str = "",
     ) -> None:
         self.llm = llm
-        self.system_prompt = system_prompt
+        self.persona_prompt = persona_prompt
+        self.core_prompt = core_prompt
         self.rag_instructions = rag_instructions
 
     async def __call__(self, state: AgentState) -> dict:
-        messages = [SystemMessage(content=self.system_prompt)]
+        messages = [
+            SystemMessage(content=self.core_prompt),
+            SystemMessage(content=self.persona_prompt),
+        ]
         rag_context = state.get("rag_context") or ""
         if rag_context:
             additional = (

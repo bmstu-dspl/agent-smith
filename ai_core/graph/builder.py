@@ -21,7 +21,7 @@ from ai_core.graph.nodes import (
     tool_output_guard,
 )
 from ai_core.graph.state import AgentState
-from ai_core.graph.prompts import AGENT_SYSTEM_PROMPT
+from ai_core.graph.prompts import DEFAULT_PERSONA_PROMPT
 from ai_core.tools import ToolRegistry
 from admin_panel.settings import AgentSettings, RagSettings
 
@@ -147,7 +147,11 @@ def build_langgraph(
         "agent",
         AgentNode(
             agent_llm,
-            system_prompt=agent_settings.system_prompt if agent_settings else AGENT_SYSTEM_PROMPT,
+            persona_prompt=(
+                agent_settings.system_prompt
+                if agent_settings
+                else DEFAULT_PERSONA_PROMPT
+            ),
             rag_instructions=rag_settings.additional_instructions if rag_settings else "",
         ),
     )
@@ -285,7 +289,11 @@ def build_graph(
     if llm is None:
         return StubGraph()
 
-    registry = tool_registry or ToolRegistry()
+    registry = tool_registry or ToolRegistry(
+        primary_timezone=(
+            agent_settings.primary_timezone if agent_settings is not None else "UTC"
+        )
+    )
     if mcp_tools:
         registry.register_many(mcp_tools)
     effective_rag_memory = (

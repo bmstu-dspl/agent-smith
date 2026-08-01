@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from cryptography.fernet import Fernet, InvalidToken
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -45,11 +46,22 @@ class AgentSettings(BaseModel):
     provider: Literal["google_vertex", "openai"] = "google_vertex"
     model: str = Field(default="gemini-2.5-flash", min_length=1, max_length=200)
     temperature: float = Field(default=0.2, ge=0, le=2)
+    primary_timezone: str = Field(default="UTC", min_length=1, max_length=200)
     system_prompt: str = Field(
         default=AGENT_SYSTEM_PROMPT_DEFAULT,
         min_length=1,
         max_length=100_000,
     )
+
+    @field_validator("primary_timezone")
+    @classmethod
+    def primary_timezone_must_be_iana_name(cls, value: str) -> str:
+        normalized = value.strip()
+        try:
+            ZoneInfo(normalized)
+        except (ValueError, ZoneInfoNotFoundError) as error:
+            raise ValueError("primary_timezone must be a valid IANA timezone") from error
+        return normalized
 
 
 class AgentSettingsUpdate(AgentSettings):

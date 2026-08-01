@@ -29,10 +29,15 @@ async def test_committed_agent_settings_rebuild_graph_before_next_request() -> N
     )
     session_factory = sessionmaker(bind=engine, expire_on_commit=False)
     store = SettingsStore(session_factory, Fernet.generate_key().decode())
-    built_with: list[tuple[str, str, str]] = []
+    built_with: list[tuple[str, str, str, str]] = []
 
     async def build_graph(agent, rag):
-        fingerprint = (agent.model, agent.system_prompt, rag.additional_instructions)
+        fingerprint = (
+            agent.model,
+            agent.system_prompt,
+            agent.primary_timezone,
+            rag.additional_instructions,
+        )
         built_with.append(fingerprint)
         return fingerprint
 
@@ -47,6 +52,7 @@ async def test_committed_agent_settings_rebuild_graph_before_next_request() -> N
             model="gpt-5-mini",
             temperature=0.3,
             system_prompt="New live prompt",
+            primary_timezone="America/New_York",
         ),
         updated_by="test-admin",
     )
@@ -68,6 +74,7 @@ async def test_committed_agent_settings_rebuild_graph_before_next_request() -> N
     assert second == (
         "gpt-5-mini",
         "New live prompt",
+        "America/New_York",
         "Use only published hotel policies.",
     )
     assert second is await provider.get_graph()

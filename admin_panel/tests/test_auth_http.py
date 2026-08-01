@@ -53,6 +53,8 @@ def test_admin_session_requires_login_and_returns_authenticated_identity() -> No
         assert dashboard.status_code == 200
         assert "Telegram settings" in dashboard.text
         assert "Agent settings" in dashboard.text
+        assert '<select name="primary_timezone">' in dashboard.text
+        assert '<option value="Europe/Moscow">Europe/Moscow</option>' in dashboard.text
         assert "RAG documents" in dashboard.text
         assert "MCP servers" in dashboard.text
         assert "Administrators" in dashboard.text

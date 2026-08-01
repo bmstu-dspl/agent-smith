@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import html
+from zoneinfo import available_timezones
 
 
 def dashboard_html(username: str, role: str) -> str:
     safe_username = html.escape(username)
     safe_role = html.escape(role)
+    timezone_names = ["UTC", *sorted(available_timezones() - {"UTC"})]
+    timezone_options = "".join(
+        f'<option value="{html.escape(name)}">{html.escape(name)}</option>'
+        for name in timezone_names
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -76,7 +82,9 @@ def dashboard_html(username: str, role: str) -> str:
       <label>Provider <select name="provider"><option value="google_vertex">Google Vertex</option><option value="openai">OpenAI</option></select></label>
       <label>Model <input name="model" required></label>
       <label>Temperature <input name="temperature" type="number" min="0" max="2" step=".1" required></label>
-      <label class="wide">System prompt <textarea name="system_prompt" required></textarea></label>
+      <label>Primary timezone <select name="primary_timezone">{timezone_options}</select></label>
+      <label class="wide">Persona prompt <textarea name="system_prompt" required></textarea></label>
+      <p class="muted wide">The persona is configurable. Core tool-use and workflow instructions are managed by the runtime.</p>
       <div class="wide"><button class="primary">Save agent settings</button></div>
     </form>
   </section>
