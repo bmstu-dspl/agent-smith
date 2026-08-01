@@ -24,7 +24,6 @@ from app.escalation_service import EscalationService
 from app.live_config import LiveTelegramSettingsProvider
 
 router = Router()
-router.message.middleware(SessionMiddleware())
 
 logger = logging.getLogger(__name__)
 

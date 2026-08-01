@@ -2,8 +2,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from aiogram.types import CallbackQuery, Chat, Message, User
 
-from app.handlers import UserStates, cmd_new, cmd_start
+from app.handlers import UserStates, cmd_new, cmd_start, router
 from app.middleware.session_middleware import SessionMiddleware
 
 
@@ -44,6 +45,43 @@ async def test_rotating_a_redis_session_preserves_old_session_record() -> None:
     assert await middleware.get_user_session(42) == second
     assert f"session:{first}" in redis.values
     assert f"session:{second}" in redis.values
+
+
+@pytest.mark.asyncio
+async def test_one_redis_middleware_keeps_messages_and_callbacks_in_the_same_session() -> None:
+    assert not any(
+        isinstance(middleware, SessionMiddleware)
+        for middleware, _ in router.message.middleware._middlewares
+    )
+
+    redis = FakeRedis()
+    middleware = SessionMiddleware(redis)
+    user = User(id=42, is_bot=False, first_name="Test")
+    chat = Chat(id=42, type="private")
+    message = Message(
+        message_id=1,
+        date=0,
+        chat=chat,
+        from_user=user,
+        text="hello",
+    )
+    callback = CallbackQuery(
+        id="callback-1",
+        from_user=user,
+        chat_instance="chat-instance",
+        data="reply:breakfast:12345678",
+        message=message,
+    )
+    observed_session_ids = []
+
+    async def capture_session(_event, data):
+        observed_session_ids.append(data["session_id"])
+
+    await middleware(capture_session, message, {})
+    await middleware(capture_session, callback, {})
+
+    assert len(observed_session_ids) == 2
+    assert observed_session_ids[0] == observed_session_ids[1]
 
 
 @pytest.mark.asyncio
