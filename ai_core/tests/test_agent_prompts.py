@@ -28,5 +28,7 @@ async def test_agent_receives_neutral_core_workflows_and_configurable_persona() 
     core_prompt = system_messages[0].content
     assert "ask_user" in core_prompt
     assert "get_current_datetime" in core_prompt
+    assert "Если вопрос сложный, возникла ошибка" in core_prompt
+    assert "handoff_to_operator" in core_prompt
     assert "отел" not in core_prompt.lower()
     assert system_messages[1].content == persona
