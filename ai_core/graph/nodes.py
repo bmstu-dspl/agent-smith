@@ -1,6 +1,9 @@
 import asyncio
+from datetime import date, datetime
 import json
+import re
 from typing import Literal
+from zoneinfo import ZoneInfo
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from ai_core.graph.prompts import (
     CORE_SYSTEM_PROMPT,
@@ -11,6 +14,121 @@ from ai_core.graph.state import AgentState
 from RAG import BuildAgentContextQuery
 from pydantic import ValidationError
 from ai_core.graph.rag_query import RagSearchRequest
+
+
+_DATE_PATTERNS = (
+    re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?:[T ].*)?$"),
+    re.compile(r"^(\d{2})[-./](\d{2})[-./](\d{4})$"),
+)
+
+
+def _parsed_dates(value: object) -> list[date]:
+    if isinstance(value, dict):
+        return [parsed for item in value.values() for parsed in _parsed_dates(item)]
+    if isinstance(value, list):
+        return [parsed for item in value for parsed in _parsed_dates(item)]
+    if not isinstance(value, str):
+        return []
+
+    candidate = value.strip()
+    for index, pattern in enumerate(_DATE_PATTERNS):
+        match = pattern.match(candidate)
+        if not match:
+            continue
+        parts = [int(part) for part in match.groups()]
+        try:
+            if index == 0:
+                return [date(parts[0], parts[1], parts[2])]
+            return [date(parts[2], parts[1], parts[0])]
+        except ValueError:
+            return []
+    return []
+
+
+def _latest_tool_calls(state: AgentState) -> list[dict]:
+    for message in reversed(state.get("messages", [])):
+        if isinstance(message, AIMessage):
+            return list(message.tool_calls or [])
+    return []
+
+
+def _has_current_datetime_context(state: AgentState) -> bool:
+    for message in reversed(state.get("messages", [])):
+        if isinstance(message, HumanMessage):
+            return False
+        if not isinstance(message, ToolMessage):
+            continue
+        if message.name == "get_current_datetime":
+            return True
+        if message.additional_kwargs.get("date_guard_checked") is True:
+            return True
+    return False
+
+
+def route_after_agent_with_date_guard(
+    state: AgentState,
+    *,
+    primary_timezone: str,
+) -> Literal["tools", "date_guard", "__end__"]:
+    calls = _latest_tool_calls(state)
+    if not calls:
+        return "__end__"
+
+    dates = [
+        parsed
+        for call in calls
+        for parsed in _parsed_dates(call.get("args", {}))
+    ]
+    if not dates:
+        return "tools"
+
+    today = datetime.now(ZoneInfo(primary_timezone)).date()
+    if any(candidate < today for candidate in dates):
+        return "date_guard"
+    if not _has_current_datetime_context(state):
+        return "date_guard"
+    return "tools"
+
+
+class DateToolGuardNode:
+    def __init__(self, current_datetime_tool) -> None:
+        self.current_datetime_tool = current_datetime_tool
+
+    async def __call__(self, state: AgentState) -> dict:
+        current = await self.current_datetime_tool.ainvoke({})
+        today = date.fromisoformat(current["primary_date"])
+        calls = _latest_tool_calls(state)
+        messages = []
+        for call in calls:
+            parsed_dates = _parsed_dates(call.get("args", {}))
+            past_dates = sorted(
+                candidate.isoformat() for candidate in parsed_dates if candidate < today
+            )
+            messages.append(
+                ToolMessage(
+                    content=json.dumps(
+                        {
+                            "status": "blocked_for_date_validation",
+                            "reason": (
+                                "date_is_in_the_past"
+                                if past_dates
+                                else "current_datetime_required"
+                            ),
+                            "past_dates": past_dates,
+                            "current_datetime": current,
+                            "instruction": (
+                                "Reconstruct all dates from the user's request using the "
+                                "current datetime, then retry the external tool call."
+                            ),
+                        }
+                    ),
+                    tool_call_id=call["id"],
+                    name=call["name"],
+                    additional_kwargs={"date_guard_checked": True},
+                )
+            )
+        return {"messages": messages}
+
 
 def input_guard(state: AgentState) -> dict:
     user_message = state.get("user_message", "").strip()

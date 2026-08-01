@@ -2,6 +2,7 @@
 import time
 import logging
 import json
+import uuid
 from typing import Dict, Any, Callable, Awaitable, Optional
 from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject, Message, User
@@ -45,6 +46,7 @@ class SessionMiddleware(BaseMiddleware):
             
             # Сохраняем в data для передачи хендлерам
             data['session_id'] = session_id
+            data['session_middleware'] = self
             data['user_metadata'] = {
                 "id": user.id,
                 "username": user.username,
@@ -92,30 +94,7 @@ class SessionMiddleware(BaseMiddleware):
                 )
                 return session_id
             
-            # Создаем новую сессию
-            new_session_id = f"user_{user_id}_{int(time.time())}_{hex(user_id)[2:]}"
-            
-            # Сохраняем связь user_id -> session_id
-            await self.redis.setex(
-                f"{self.USER_SESSION_KEY}{user_id}",
-                self.SESSION_TTL,
-                new_session_id
-            )
-            
-            # Сохраняем информацию о сессии
-            session_info = {
-                "user_id": user_id,
-                "created_at": int(time.time()),
-                "session_id": new_session_id
-            }
-            await self.redis.setex(
-                f"{self.SESSION_KEY_PREFIX}{new_session_id}",
-                self.SESSION_TTL,
-                json.dumps(session_info)
-            )
-            
-            logger.info(f"Created new session for user {user_id}: {new_session_id}")
-            return new_session_id
+            return await self._create_session_redis(user_id)
             
         except Exception as e:
             logger.error(f"Redis error: {e}, falling back to in-memory")
@@ -125,8 +104,7 @@ class SessionMiddleware(BaseMiddleware):
         """In-memory fallback"""
         session_id = self._in_memory_sessions.get(user_id)
         if not session_id:
-            session_id = f"user_{user_id}_{int(time.time())}"
-            self._in_memory_sessions[user_id] = session_id
+            session_id = self._create_session_memory(user_id)
             # Ограничиваем размер in-memory хранилища
             if len(self._in_memory_sessions) > 10000:
                 # Удаляем старые сессии (простая стратегия)
@@ -134,6 +112,44 @@ class SessionMiddleware(BaseMiddleware):
                 for key in keys[:1000]:
                     del self._in_memory_sessions[key]
         return session_id
+
+    async def rotate_session(self, user_id: int) -> str:
+        """Start a fresh agent context while retaining the old session records."""
+        if self._redis_available:
+            try:
+                return await self._create_session_redis(user_id)
+            except Exception as error:
+                logger.error("Redis session rotation failed: %s", error)
+        return self._create_session_memory(user_id)
+
+    async def _create_session_redis(self, user_id: int) -> str:
+        new_session_id = self._new_session_id(user_id)
+        session_info = {
+            "user_id": user_id,
+            "created_at": int(time.time()),
+            "session_id": new_session_id,
+        }
+        await self.redis.setex(
+            f"{self.USER_SESSION_KEY}{user_id}",
+            self.SESSION_TTL,
+            new_session_id,
+        )
+        await self.redis.setex(
+            f"{self.SESSION_KEY_PREFIX}{new_session_id}",
+            self.SESSION_TTL,
+            json.dumps(session_info),
+        )
+        logger.info("Created new session for user %s: %s", user_id, new_session_id)
+        return new_session_id
+
+    def _create_session_memory(self, user_id: int) -> str:
+        session_id = self._new_session_id(user_id)
+        self._in_memory_sessions[user_id] = session_id
+        return session_id
+
+    @staticmethod
+    def _new_session_id(user_id: int) -> str:
+        return f"user_{user_id}_{int(time.time())}_{uuid.uuid4().hex[:12]}"
     
     async def _update_last_seen(self, user_id: int):
         """Обновляет время последнего обращения"""

@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
-from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.prebuilt import ToolNode
 
 from mcp_registry import McpServerStore
 from mcp_registry.client import McpToolProvider
@@ -13,16 +13,18 @@ from mcp_registry.client import McpToolProvider
 from ai_core.contracts.schemas import Button, IncomingMessage
 from ai_core.graph.nodes import (
     AgentNode,
+    DateToolGuardNode,
     RagRetrievalNode,
     RagQueryExtractorNode,
     input_guard,
     route_after_input_guard,
+    route_after_agent_with_date_guard,
     route_after_tool_output_guard,
     tool_output_guard,
 )
 from ai_core.graph.state import AgentState
 from ai_core.graph.prompts import DEFAULT_PERSONA_PROMPT
-from ai_core.tools import ToolRegistry
+from ai_core.tools import ToolRegistry, create_current_datetime_tool
 from admin_panel.settings import AgentSettings, RagSettings
 
 
@@ -86,7 +88,11 @@ def build_llm(settings: AgentSettings | None = None):
             model=model,
             vertexai=True,
             project=project,
-            location=os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1"),
+            location=(
+                settings.vertex_location
+                if settings is not None
+                else os.getenv("GOOGLE_CLOUD_LOCATION", "global")
+            ),
             temperature=temperature,
         )
 
@@ -102,7 +108,7 @@ def build_llm(settings: AgentSettings | None = None):
     raise ValueError(f"Unsupported LLM_PROVIDER: {provider}")
 
 
-def build_rag_extractor_llm(default_llm):
+def build_rag_extractor_llm(default_llm, *, vertex_location: str = "global"):
     provider = os.getenv("RAG_EXTRACTOR_LLM_PROVIDER", "google_vertex").strip().lower()
     if provider in {"", "same", "default"}:
         return default_llm
@@ -120,7 +126,7 @@ def build_rag_extractor_llm(default_llm):
             model=model,
             vertexai=True,
             project=project,
-            location=os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1"),
+            location=vertex_location,
             temperature=0,
         )
 
@@ -139,6 +145,9 @@ def build_langgraph(
 ):
     tools = tool_registry.get_tools()
     agent_llm = llm.bind_tools(tools) if tools else llm
+    primary_timezone = (
+        agent_settings.primary_timezone if agent_settings is not None else "UTC"
+    )
 
     workflow = StateGraph(AgentState)
 
@@ -185,15 +194,24 @@ def build_langgraph(
 
     if tools:
         workflow.add_node("tools", ToolNode(tools))
+        workflow.add_node(
+            "date_guard",
+            DateToolGuardNode(create_current_datetime_tool(primary_timezone)),
+        )
         workflow.add_node("tool_output_guard", tool_output_guard)
         workflow.add_conditional_edges(
             "agent",
-            tools_condition,
+            lambda state: route_after_agent_with_date_guard(
+                state,
+                primary_timezone=primary_timezone,
+            ),
             {
                 "tools": "tools",
+                "date_guard": "date_guard",
                 "__end__": END,
             },
         )
+        workflow.add_edge("date_guard", "agent")
         workflow.add_edge("tools", "tool_output_guard")
         workflow.add_conditional_edges(
             "tool_output_guard",
@@ -255,7 +273,7 @@ class AgentGraph(StubGraph):
                     for call in tool_calls:
                         pending_calls[call["id"]] = {"name": call["name"], "args": call.get("args", {})}
 
-            elif node == "tools":
+            elif node in {"tools", "date_guard"}:
                 # ToolMessage — результат. Как только пришёл — сразу пишем одну запись
                 # с args (из pending_calls) и result вместе.
                 call_id = getattr(chunk, "tool_call_id", None)
@@ -299,7 +317,18 @@ def build_graph(
     effective_rag_memory = (
         rag_memory if rag_settings is None or rag_settings.enabled else None
     )
-    rag_extractor_llm = build_rag_extractor_llm(llm) if effective_rag_memory is not None else None
+    rag_extractor_llm = (
+        build_rag_extractor_llm(
+            llm,
+            vertex_location=(
+                agent_settings.vertex_location
+                if agent_settings is not None
+                else os.getenv("GOOGLE_CLOUD_LOCATION", "global")
+            ),
+        )
+        if effective_rag_memory is not None
+        else None
+    )
     graph = build_langgraph(
         llm,
         registry,

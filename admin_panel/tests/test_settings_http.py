@@ -133,11 +133,13 @@ def test_agent_and_rag_settings_use_explicit_validated_areas() -> None:
                 "model": "gpt-5-mini",
                 "temperature": 0.3,
                 "system_prompt": "You assist hotel guests.",
+                "vertex_location": "global",
                 "primary_timezone": "Europe/Moscow",
             },
         )
         assert agent.status_code == 200
         assert agent.json()["revision"] == 1
+        assert agent.json()["vertex_location"] == "global"
         assert agent.json()["primary_timezone"] == "Europe/Moscow"
 
         invalid_timezone = client.put(
@@ -149,6 +151,7 @@ def test_agent_and_rag_settings_use_explicit_validated_areas() -> None:
                 "model": "gpt-5-mini",
                 "temperature": 0.3,
                 "system_prompt": "You assist hotel guests.",
+                "vertex_location": "global",
                 "primary_timezone": "Mars/Olympus_Mons",
             },
         )
@@ -186,6 +189,10 @@ def test_agent_and_rag_settings_use_explicit_validated_areas() -> None:
         )
         assert rag.status_code == 200
         assert client.get("/admin/api/settings/agent").json()["model"] == "gpt-5-mini"
+        assert (
+            client.get("/admin/api/settings/agent").json()["vertex_location"]
+            == "global"
+        )
         assert (
             client.get("/admin/api/settings/agent").json()["primary_timezone"]
             == "Europe/Moscow"

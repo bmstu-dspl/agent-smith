@@ -74,14 +74,31 @@ def escape_markdown(text: str) -> str:
 # ==================== КОМАНДЫ ДЛЯ ПОЛЬЗОВАТЕЛЕЙ ====================
 
 @router.message(Command("start"))
-async def cmd_start(message: Message, state: FSMContext):
+async def cmd_start(
+    message: Message,
+    state: FSMContext,
+    session_middleware: SessionMiddleware,
+):
     """Команда /start - сброс состояния"""
+    await session_middleware.rotate_session(message.from_user.id)
     await state.set_state(UserStates.default)
     await message.answer(
         "Привет! Я ИИ-помощник.\n\n"
         "Просто отправь мне сообщение, и я помогу с решением задачи.\n"
         "Если нужна помощь специалиста, отправь команду /help"
     )
+
+
+@router.message(Command("new"))
+async def cmd_new(
+    message: Message,
+    state: FSMContext,
+    session_middleware: SessionMiddleware,
+):
+    """Start a new AI context without replaying onboarding instructions."""
+    await session_middleware.rotate_session(message.from_user.id)
+    await state.set_state(UserStates.default)
+    await message.answer("Новый диалог начат. Чем я могу помочь?")
 
 
 @router.message(Command("help"))

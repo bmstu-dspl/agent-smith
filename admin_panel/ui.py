@@ -12,6 +12,24 @@ def dashboard_html(username: str, role: str) -> str:
         f'<option value="{html.escape(name)}">{html.escape(name)}</option>'
         for name in timezone_names
     )
+    vertex_locations = [
+        "global",
+        "us",
+        "eu",
+        "us-central1",
+        "us-east4",
+        "us-west1",
+        "us-west4",
+        "europe-west1",
+        "europe-west2",
+        "europe-west4",
+        "asia-northeast1",
+        "asia-south1",
+        "asia-southeast1",
+    ]
+    vertex_location_options = "".join(
+        f'<option value="{name}">{name}</option>' for name in vertex_locations
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -82,6 +100,7 @@ def dashboard_html(username: str, role: str) -> str:
       <label>Provider <select name="provider"><option value="google_vertex">Google Vertex</option><option value="openai">OpenAI</option></select></label>
       <label>Model <input name="model" required></label>
       <label>Temperature <input name="temperature" type="number" min="0" max="2" step=".1" required></label>
+      <label id="vertex-location-field">Vertex location <select name="vertex_location">{vertex_location_options}</select></label>
       <label>Primary timezone <select name="primary_timezone">{timezone_options}</select></label>
       <label class="wide">Persona prompt <textarea name="system_prompt" required></textarea></label>
       <p class="muted wide">The persona is configurable. Core tool-use and workflow instructions are managed by the runtime.</p>
@@ -176,6 +195,12 @@ function fill(formId, data) {{
 function jsonForm(form) {{
   return Object.fromEntries(new FormData(form).entries());
 }}
+function updateProviderFields() {{
+  const provider = document.querySelector('#agent-form [name="provider"]').value;
+  document.getElementById("vertex-location-field").style.display =
+    provider === "google_vertex" ? "flex" : "none";
+}}
+document.querySelector('#agent-form [name="provider"]').onchange = updateProviderFields;
 document.querySelectorAll("nav button").forEach(button => button.onclick = () => {{
   document.querySelectorAll("nav button, main section").forEach(x => x.classList.remove("active"));
   button.classList.add("active"); document.getElementById(button.dataset.tab).classList.add("active");
@@ -184,6 +209,7 @@ async function loadSettings() {{
   const session = await api("/admin/api/session"); csrf = session.csrf_token;
   fill("telegram-form", await api("/admin/api/settings/telegram"));
   fill("agent-form", await api("/admin/api/settings/agent"));
+  updateProviderFields();
   fill("rag-form", await api("/admin/api/settings/rag"));
 }}
 async function saveJsonSettings(event, area) {{

@@ -46,6 +46,12 @@ class AgentSettings(BaseModel):
     provider: Literal["google_vertex", "openai"] = "google_vertex"
     model: str = Field(default="gemini-2.5-flash", min_length=1, max_length=200)
     temperature: float = Field(default=0.2, ge=0, le=2)
+    vertex_location: str = Field(
+        default="global",
+        min_length=2,
+        max_length=100,
+        pattern=r"^[a-z][a-z0-9-]+$",
+    )
     primary_timezone: str = Field(default="UTC", min_length=1, max_length=200)
     system_prompt: str = Field(
         default=AGENT_SYSTEM_PROMPT_DEFAULT,
