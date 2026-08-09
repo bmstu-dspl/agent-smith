@@ -69,9 +69,12 @@ class AgentResponseStream:
                     else:
                         self._placeholder_active = False
                 return
-            except TelegramBadRequest:
+            except TelegramBadRequest as exc:
                 self._rich_draft_supported = False
-                logger.warning("sendRichMessageDraft failed; using plain streaming edits")
+                logger.warning(
+                    "sendRichMessageDraft failed; using plain streaming edits: %s",
+                    exc,
+                )
             except (TelegramNetworkError, TelegramRetryAfter, TelegramServerError):
                 logger.warning(
                     "temporary sendRichMessageDraft failure; skipping stream update"
@@ -80,7 +83,12 @@ class AgentResponseStream:
 
         if self._placeholder_active:
             try:
-                await self.placeholder.edit_text(markdown + "▌")
+                await self.placeholder.edit_text(markdown + "▌", parse_mode=None)
+            except TelegramBadRequest as exc:
+                logger.warning(
+                    "plain streaming edit rejected; skipping stream update: %s",
+                    exc,
+                )
             except (TelegramNetworkError, TelegramRetryAfter, TelegramServerError):
                 logger.warning("temporary placeholder edit failure; skipping stream update")
 

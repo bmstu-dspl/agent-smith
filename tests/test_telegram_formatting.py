@@ -128,11 +128,39 @@ async def test_agent_response_stream_falls_back_to_editing_placeholder() -> None
     await stream.update("Черновик")
     await stream.finalize("**Номер**")
 
-    assert placeholder.edit_text.await_args_list[0].args == ("Черновик▌",)
+    draft = placeholder.edit_text.await_args_list[0]
+    assert draft.args == ("Черновик▌",)
+    assert draft.kwargs["parse_mode"] is None
     final = placeholder.edit_text.await_args_list[1]
     assert final.kwargs["text"] is None
     assert final.kwargs["rich_message"].markdown == "**Номер**"
     bot.send_rich_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rejected_plain_streaming_edit_does_not_abort_final_response() -> None:
+    placeholder = AsyncMock()
+    placeholder.message_id = 73
+    placeholder.edit_text.side_effect = [
+        TelegramBadRequest(method=AsyncMock(), message="invalid partial text"),
+        None,
+    ]
+    bot = AsyncMock()
+    bot.send_rich_message_draft.side_effect = TelegramBadRequest(
+        method=AsyncMock(),
+        message="invalid partial rich markdown",
+    )
+    stream = AgentResponseStream(
+        placeholder,
+        bot=bot,
+        chat_id=42,
+        min_update_interval_seconds=0,
+    )
+
+    await stream.update("<")
+    await stream.finalize("Готовый ответ")
+
+    assert placeholder.edit_text.await_count == 2
 
 
 @pytest.mark.asyncio
