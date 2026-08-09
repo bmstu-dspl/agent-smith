@@ -122,8 +122,10 @@ async def test_rich_media_resolver_downloads_http_images_for_multipart_upload() 
 
     prepared = await resolver.prepare(f"![]({url})\n**Номер**")
 
-    assert prepared.rich_message.html is None
-    assert prepared.rich_message.markdown == "![](tg://photo?id=photo_1)\n**Номер**"
+    assert prepared.rich_message.markdown is None
+    assert prepared.rich_message.html == (
+        '<img src="tg://photo?id=photo_1"/>\n<p><b>Номер</b></p>'
+    )
     media = prepared.rich_message.media[0].media.media
     assert isinstance(media, BufferedInputFile)
     assert media.data == b"jpeg-data"
@@ -156,8 +158,11 @@ async def test_rich_markdown_sends_booking_url_ampersands_without_escaping() -> 
     ):
         prepared = await resolver.prepare(markdown)
 
-        assert prepared.rich_message.html is None
-        assert prepared.rich_message.markdown == expected
+        assert prepared.rich_message.markdown is None
+        if markdown == escaped_url:
+            assert prepared.rich_message.html == f"<p>{expected.replace('&', '&amp;')}</p>"
+        else:
+            assert prepared.rich_message.html == f"<p>{expected}</p>"
 
 
 @pytest.mark.asyncio
@@ -172,13 +177,13 @@ async def test_rich_markdown_preserves_model_lists_and_line_breaks() -> None:
 
     prepared = await resolver.prepare(markdown)
 
-    assert prepared.rich_message.html is None
-    assert prepared.rich_message.markdown == (
-        "**Стандарт с раздельными кроватями**\n"
-        "* 7 900 ₽ — без завтрака\n"
-        "* 9 300 ₽ — с завтраком\n"
-        '<a href="https://hotel.example/booking?room=42&amp;rate=7">'
-        "Забронировать</a>"
+    assert prepared.rich_message.markdown is None
+    assert prepared.rich_message.html == (
+        "<p><b>Стандарт с раздельными кроватями</b></p>\n"
+        "<ul><li>7 900 ₽ — без завтрака</li>"
+        "<li>9 300 ₽ — с завтраком</li></ul>\n"
+        '<p><a href="https://hotel.example/booking?room=42&amp;rate=7">'
+        "Забронировать</a></p>"
     )
 
 
@@ -250,8 +255,8 @@ async def test_rich_media_resolver_does_not_fetch_untrusted_urls() -> None:
         "</tg-slideshow>\n**Номер**"
     )
 
-    assert prepared.rich_message.html is None
-    assert prepared.rich_message.markdown == "**Номер**"
+    assert prepared.rich_message.markdown is None
+    assert prepared.rich_message.html == "<p><b>Номер</b></p>"
     assert prepared.rich_message.media is None
     assert http.urls == []
 
