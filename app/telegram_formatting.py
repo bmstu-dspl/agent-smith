@@ -108,7 +108,10 @@ class RichMediaResolver:
         if not matches:
             return PreparedRichMessage(
                 rich_message=InputRichMessage(
-                    markdown=markdown_links_to_rich_markdown(markdown)
+                    markdown=markdown,
+                    skip_entity_detection=(
+                        True if rich_markdown_link_needs_raw_entities(markdown) else None
+                    ),
                 ),
                 source_urls=[],
             )
@@ -144,7 +147,10 @@ class RichMediaResolver:
         rendered = re.sub(r"\n{3,}", "\n\n", rendered).strip()
         return PreparedRichMessage(
             rich_message=InputRichMessage(
-                markdown=markdown_links_to_rich_markdown(rendered),
+                markdown=rendered,
+                skip_entity_detection=(
+                    True if rich_markdown_link_needs_raw_entities(rendered) else None
+                ),
                 media=media or None,
             ),
             source_urls=source_urls,
@@ -385,16 +391,9 @@ def normalize_markdown_http_urls(markdown: str) -> str:
     )
 
 
-def markdown_links_to_rich_markdown(markdown: str) -> str:
-    """Keep Rich Markdown but route HTTP links through its HTML parser."""
-    markdown = normalize_markdown_http_urls(markdown)
-    return _MARKDOWN_HTTP_LINK.sub(
-        lambda match: (
-            f'<a href="{html.escape(match.group("url"), quote=True)}">'
-            f'{html.escape(match.group("label"))}</a>'
-        ),
-        markdown,
-    )
+def rich_markdown_link_needs_raw_entities(markdown: str) -> bool:
+    """Return whether an explicit HTTP link needs Telegram entity detection disabled."""
+    return any("&" in match.group("url") for match in _MARKDOWN_HTTP_LINK.finditer(markdown))
 
 
 def markdown_to_telegram_html(markdown: str) -> str:

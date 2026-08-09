@@ -142,22 +142,24 @@ async def test_rich_markdown_sends_booking_url_ampersands_without_escaping() -> 
     )
     url = escaped_url.replace("&amp;", "&")
 
-    for markdown, expected in (
-        (escaped_url, url),
+    for markdown, expected, skip_entity_detection in (
+        (escaped_url, url, None),
         (
             f"[{escaped_url}]({escaped_url})",
-            f'<a href="{url.replace("&", "&amp;")}">'
-            f'{url.replace("&", "&amp;")}</a>',
+            f"[{url}]({url})",
+            True,
         ),
         (
             f"[Забронировать]({escaped_url})",
-            f'<a href="{url.replace("&", "&amp;")}">Забронировать</a>',
+            f"[Забронировать]({url})",
+            True,
         ),
     ):
         prepared = await resolver.prepare(markdown)
 
         assert prepared.rich_message.html is None
         assert prepared.rich_message.markdown == expected
+        assert prepared.rich_message.skip_entity_detection is skip_entity_detection
 
 
 @pytest.mark.asyncio
@@ -177,9 +179,33 @@ async def test_rich_markdown_preserves_model_lists_and_line_breaks() -> None:
         "**Стандарт с раздельными кроватями**\n"
         "* 7 900 ₽ — без завтрака\n"
         "* 9 300 ₽ — с завтраком\n"
-        '<a href="https://hotel.example/booking?room=42&amp;rate=7">'
-        "Забронировать</a>"
+        "[Забронировать](https://hotel.example/booking?room=42&rate=7)"
     )
+    assert prepared.rich_message.skip_entity_detection is True
+
+
+@pytest.mark.asyncio
+async def test_rich_markdown_keeps_media_when_booking_link_disables_detection() -> None:
+    http = FakeHttpClient()
+    resolver = RichMediaResolver(
+        redis=FakeRedis(),
+        http_client_factory=lambda **_kwargs: http,
+    )
+    image_url = "https://partner-static.tlintegration.com/image-id"
+    booking_url = "https://hotel.example/booking?room=42&rate=7"
+
+    prepared = await resolver.prepare(
+        f"<tg-slideshow>\n![]({image_url})\n</tg-slideshow>\n"
+        f"**Номер**\n[Забронировать]({booking_url})"
+    )
+
+    assert prepared.rich_message.markdown == (
+        "<tg-slideshow>\n![](tg://photo?id=photo_1)\n</tg-slideshow>\n"
+        f"**Номер**\n[Забронировать]({booking_url})"
+    )
+    assert prepared.rich_message.skip_entity_detection is True
+    assert isinstance(prepared.rich_message.media[0].media.media, BufferedInputFile)
+    assert prepared.source_urls == [image_url]
 
 
 def test_html_fallback_does_not_double_escape_booking_url_entities() -> None:
