@@ -56,17 +56,12 @@ _UNCLOSED_RICH_MEDIA_BLOCK = re.compile(
 )
 _RICH_MEDIA_TAG = re.compile(r"</?tg-[^>]*>?", re.IGNORECASE)
 _MARKDOWN_LINK = re.compile(r"\[([^\]\n]+)\]\(https?://[^\s)]+\)")
-_MARKDOWN_UNORDERED_LIST_ITEM = re.compile(r"^\s*[*+-]\s+(.+)$")
-_MARKDOWN_ORDERED_LIST_ITEM = re.compile(r"^\s*\d+[.)]\s+(.+)$")
-_MARKDOWN_HEADING = re.compile(r"^(#{1,6})\s+(.+)$")
+_MARKDOWN_HTTP_LINK = re.compile(
+    r"(?<!!)\[(?P<label>[^\]\n]+)\]\((?P<url>https?://[^\s)]+)\)"
+)
 _HTTP_URL = re.compile(r"https?://[^\s<>()\[\]]+")
 _HTML_ESCAPED_AMPERSAND = re.compile(
     r"&(?:amp|#0*38|#x0*26);",
-    re.IGNORECASE,
-)
-_SAFE_RICH_HTML_TAG = re.compile(
-    r"</?tg-(?:slideshow|collage)\s*>"
-    r'|<img\s+src="tg://photo\?id=photo_\d+"\s*/?>',
     re.IGNORECASE,
 )
 _MAX_DRAFT_TEXT_LENGTH = 4096
@@ -112,7 +107,9 @@ class RichMediaResolver:
         matches = list(_MARKDOWN_IMAGE.finditer(markdown))
         if not matches:
             return PreparedRichMessage(
-                rich_message=InputRichMessage(html=markdown_to_rich_html(markdown)),
+                rich_message=InputRichMessage(
+                    markdown=markdown_links_to_rich_markdown(markdown)
+                ),
                 source_urls=[],
             )
 
@@ -140,14 +137,14 @@ class RichMediaResolver:
                 )
             )
             source_urls.append(url)
-            return f'<img src="tg://photo?id={media_id}"/>'
+            return f"![](tg://photo?id={media_id})"
 
         rendered = _MARKDOWN_IMAGE.sub(replace_image, markdown)
         rendered = _EMPTY_RICH_MEDIA_BLOCK.sub("", rendered)
         rendered = re.sub(r"\n{3,}", "\n\n", rendered).strip()
         return PreparedRichMessage(
             rich_message=InputRichMessage(
-                html=markdown_to_rich_html(rendered),
+                markdown=markdown_links_to_rich_markdown(rendered),
                 media=media or None,
             ),
             source_urls=source_urls,
@@ -388,81 +385,16 @@ def normalize_markdown_http_urls(markdown: str) -> str:
     )
 
 
-def markdown_to_rich_html(markdown: str) -> str:
-    """Convert agent Markdown to safe Rich HTML with native rich-media tags."""
-    markdown = normalize_markdown_http_urls(markdown).strip()
-    protected_tags: list[str] = []
-
-    def protect_tag(match: re.Match[str]) -> str:
-        token = f"AGENTSMITHRICHHTMLTOKEN{len(protected_tags)}END"
-        protected_tags.append(match.group(0))
-        return token
-
-    protected = _SAFE_RICH_HTML_TAG.sub(protect_tag, markdown)
-    rendered_blocks: list[str] = []
-    paragraph_lines: list[str] = []
-    list_kind: str | None = None
-    list_items: list[str] = []
-
-    def flush_paragraph() -> None:
-        if not paragraph_lines:
-            return
-        content = "<br/>".join(_markdown_inline_to_html(line) for line in paragraph_lines)
-        rendered_blocks.append(f"<p>{content}</p>")
-        paragraph_lines.clear()
-
-    def flush_list() -> None:
-        nonlocal list_kind
-        if list_kind is None:
-            return
-        items = "".join(f"<li>{item}</li>" for item in list_items)
-        rendered_blocks.append(f"<{list_kind}>{items}</{list_kind}>")
-        list_kind = None
-        list_items.clear()
-
-    for raw_line in protected.splitlines():
-        line = raw_line.strip()
-        if not line:
-            flush_paragraph()
-            flush_list()
-            continue
-
-        if re.fullmatch(r"AGENTSMITHRICHHTMLTOKEN\d+END", line):
-            flush_paragraph()
-            flush_list()
-            rendered_blocks.append(line)
-            continue
-
-        unordered = _MARKDOWN_UNORDERED_LIST_ITEM.match(line)
-        ordered = _MARKDOWN_ORDERED_LIST_ITEM.match(line)
-        if unordered or ordered:
-            flush_paragraph()
-            next_kind = "ul" if unordered else "ol"
-            if list_kind != next_kind:
-                flush_list()
-                list_kind = next_kind
-            item_text = (unordered or ordered).group(1)
-            list_items.append(_markdown_inline_to_html(item_text))
-            continue
-
-        flush_list()
-        heading = _MARKDOWN_HEADING.match(line)
-        if heading:
-            flush_paragraph()
-            level = len(heading.group(1))
-            rendered_blocks.append(
-                f"<h{level}>{_markdown_inline_to_html(heading.group(2))}</h{level}>"
-            )
-            continue
-
-        paragraph_lines.append(line)
-
-    flush_paragraph()
-    flush_list()
-    rendered = "\n".join(rendered_blocks)
-    for index, tag in enumerate(protected_tags):
-        rendered = rendered.replace(f"AGENTSMITHRICHHTMLTOKEN{index}END", tag)
-    return rendered
+def markdown_links_to_rich_markdown(markdown: str) -> str:
+    """Keep Rich Markdown but route HTTP links through its HTML parser."""
+    markdown = normalize_markdown_http_urls(markdown)
+    return _MARKDOWN_HTTP_LINK.sub(
+        lambda match: (
+            f'<a href="{html.escape(match.group("url"), quote=True)}">'
+            f'{html.escape(match.group("label"))}</a>'
+        ),
+        markdown,
+    )
 
 
 def markdown_to_telegram_html(markdown: str) -> str:
