@@ -15,6 +15,8 @@ from DB import DatabaseConfig, PostgresDatabase
 from .auth_store import AdminAuthStore, AdminIdentity
 from .rag_api import create_rag_router
 from .mcp_api import create_mcp_router
+from .skills import SkillStore
+from .skills_api import create_skills_router
 from .ui import dashboard_html
 from .settings import (
     AgentSettingsUpdate,
@@ -42,6 +44,7 @@ def create_app(
     settings_store: SettingsStore | None = None,
     rag_memory=None,
     mcp_store=None,
+    skill_store: SkillStore | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -51,7 +54,8 @@ def create_app(
             database = PostgresDatabase(DatabaseConfig.from_env())
             database.open()
             database.migrate()
-            store = AdminAuthStore(sessionmaker(bind=database.engine, expire_on_commit=False))
+            session_factory = sessionmaker(bind=database.engine, expire_on_commit=False)
+            store = AdminAuthStore(session_factory)
             _bootstrap_first_admin(store)
             app.state.auth_store = store
             encryption_key = os.getenv("CONFIG_SECRETS_ENCRYPTION_KEY") or os.getenv(
@@ -59,10 +63,8 @@ def create_app(
             )
             if not encryption_key:
                 raise RuntimeError("CONFIG_SECRETS_ENCRYPTION_KEY is required")
-            app.state.settings_store = SettingsStore(
-                sessionmaker(bind=database.engine, expire_on_commit=False),
-                encryption_key,
-            )
+            app.state.settings_store = SettingsStore(session_factory, encryption_key)
+            app.state.skill_store = SkillStore(session_factory)
             from RAG import (
                 GoogleEmbeddingConfig,
                 GoogleEmbeddingProvider,
@@ -87,6 +89,8 @@ def create_app(
                 app.state.rag_memory = rag_memory
             if mcp_store is not None:
                 app.state.mcp_store = mcp_store
+            if skill_store is not None:
+                app.state.skill_store = skill_store
         yield
         if embedding_provider is not None:
             embedding_provider.close()
@@ -109,6 +113,7 @@ def create_app(
         return response
     application.include_router(create_rag_router(_require_identity, _require_mutation_access))
     application.include_router(create_mcp_router(_require_identity, _require_mutation_access))
+    application.include_router(create_skills_router(_require_identity, _require_mutation_access))
 
     @application.get("/admin/login", response_class=HTMLResponse)
     async def login_page() -> str:

@@ -26,6 +26,7 @@ from ai_core.graph.state import AgentState
 from ai_core.graph.prompts import DEFAULT_PERSONA_PROMPT
 from ai_core.tools import ToolRegistry, create_current_datetime_tool
 from admin_panel.settings import AgentSettings, RagSettings
+from admin_panel.skills import AgentSkill
 
 
 class StubGraph:
@@ -142,6 +143,7 @@ def build_langgraph(
     *,
     agent_settings: AgentSettings | None = None,
     rag_settings: RagSettings | None = None,
+    skills: tuple[AgentSkill, ...] = (),
 ):
     tools = tool_registry.get_tools()
     agent_llm = llm.bind_tools(tools) if tools else llm
@@ -162,6 +164,7 @@ def build_langgraph(
                 else DEFAULT_PERSONA_PROMPT
             ),
             rag_instructions=rag_settings.additional_instructions if rag_settings else "",
+            skills=skills,
         ),
     )
     if rag_memory is not None:
@@ -302,6 +305,7 @@ def build_graph(
     *,
     agent_settings: AgentSettings | None = None,
     rag_settings: RagSettings | None = None,
+    skills: tuple[AgentSkill, ...] = (),
 ) -> StubGraph:
     llm = build_llm(agent_settings)
     if llm is None:
@@ -310,7 +314,8 @@ def build_graph(
     registry = tool_registry or ToolRegistry(
         primary_timezone=(
             agent_settings.primary_timezone if agent_settings is not None else "UTC"
-        )
+        ),
+        skills=skills,
     )
     if mcp_tools:
         registry.register_many(mcp_tools)
@@ -337,6 +342,7 @@ def build_graph(
         rag_extractor_llm=rag_extractor_llm,
         agent_settings=agent_settings,
         rag_settings=rag_settings,
+        skills=skills,
     )
     return AgentGraph(graph, registry)
 
@@ -347,6 +353,7 @@ async def rebuild_graph(
     *,
     agent_settings: AgentSettings | None = None,
     rag_settings: RagSettings | None = None,
+    skills: tuple[AgentSkill, ...] = (),
 ) -> StubGraph:
     mcp_tools = await McpToolProvider(mcp_store).get_all_tools()
     return build_graph(
@@ -355,4 +362,5 @@ async def rebuild_graph(
         mcp_tools=mcp_tools,
         agent_settings=agent_settings,
         rag_settings=rag_settings,
+        skills=skills,
     )

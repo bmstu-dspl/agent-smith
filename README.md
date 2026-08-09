@@ -1,6 +1,7 @@
 # agent-smith
 
 Production deployment, backup, and rollback: [DEPLOYMENT.md](DEPLOYMENT.md).
+Agent Skills administration and room-availability template: [docs/skills.md](docs/skills.md).
 
 ## Стек
 

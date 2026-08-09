@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 
 import httpx
 from aiogram import F, Router
-from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -22,6 +21,7 @@ from app.models import IncomingMessage
 from app.escalation_service import EscalationService
 
 from app.live_config import LiveTelegramSettingsProvider
+from app.telegram_formatting import AgentResponseStream
 
 router = Router()
 
@@ -440,11 +440,15 @@ async def handle_user_default(
     )
 
     sent_message = await message.answer("⏳ Генерация ответа...")
+    response_stream = AgentResponseStream(
+        sent_message,
+        bot=message.bot,
+        chat_id=message.chat.id,
+    )
     await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
 
     full_text = ""
     buttons = []
-    last_edit_text = ""
 
     try:
         runtime_settings = await _get_runtime_settings()
@@ -471,15 +475,7 @@ async def handle_user_default(
                     if etype == "text_chunk":
                         chunk = event.get("content", "")
                         full_text += chunk
-
-                        new_text = full_text + "▌"
-                        if new_text != last_edit_text:
-                            try:
-                                await sent_message.edit_text(new_text)
-                                last_edit_text = new_text
-                            except TelegramBadRequest as e:
-                                if "message is not modified" not in str(e):
-                                    logger.warning(f"Ошибка при редактировании: {e}")
+                        await response_stream.update(full_text)
 
                     elif etype == "buttons":
                         raw_buttons = event.get("buttons", [])
@@ -504,18 +500,21 @@ async def handle_user_default(
             reply_markup = keyboard
 
         final_text = full_text.strip() or "Агент вернул пустой ответ."
-        await sent_message.edit_text(final_text, reply_markup=reply_markup)
+        await response_stream.finalize(
+            final_text,
+            reply_markup=reply_markup,
+        )
 
     except httpx.HTTPStatusError as e:
         logger.error(f"Ошибка HTTP {e.response.status_code}")
-        await sent_message.edit_text("Ошибка AI-ядра. Попробуйте позже.")
+        await response_stream.finalize("Ошибка AI-ядра. Попробуйте позже.")
     except httpx.RequestError as e:
         logger.error(f"Сетевая ошибка: {e}")
-        await sent_message.edit_text("Не удалось соединиться с AI-ядром.")
+        await response_stream.finalize("Не удалось соединиться с AI-ядром.")
     except Exception as e:
         logger.error(f"Неизвестная ошибка: {e}", exc_info=True)
         try:
-            await sent_message.edit_text("Произошла непредвиденная ошибка.")
+            await response_stream.finalize("Произошла непредвиденная ошибка.")
         except Exception:
             pass
 
@@ -608,6 +607,11 @@ async def handle_callback_query(
 
     # Отправляем начальное сообщение
     sent_message = await callback.message.answer("⏳ Обработка действия...")
+    response_stream = AgentResponseStream(
+        sent_message,
+        bot=callback.bot,
+        chat_id=chat_id,
+    )
 
     try:
         runtime_settings = await _get_runtime_settings()
@@ -625,7 +629,6 @@ async def handle_callback_query(
 
             full_text = ""
             buttons = []
-            last_edit_text = ""
             first_chunk_received = False
 
             await callback.bot.send_chat_action(chat_id=chat_id, action="typing")
@@ -652,23 +655,8 @@ async def handle_callback_query(
                     if etype == "text_chunk":
                         chunk = event.get("content", "")
                         full_text += chunk
-
-                        if not first_chunk_received:
-                            first_chunk_received = True
-                            try:
-                                await sent_message.edit_text(full_text + "▌")
-                                last_edit_text = full_text + "▌"
-                            except Exception as e:
-                                logger.warning(f"Ошибка при первом редактировании: {e}")
-                        else:
-                            new_text = full_text + "▌"
-                            if new_text != last_edit_text:
-                                try:
-                                    await sent_message.edit_text(new_text)
-                                    last_edit_text = new_text
-                                except TelegramBadRequest as e:
-                                    if "message is not modified" not in str(e):
-                                        logger.warning(f"Ошибка при редактировании: {e}")
+                        first_chunk_received = True
+                        await response_stream.update(full_text)
 
                     elif etype == "buttons":
                         raw_buttons = event.get("buttons", [])
@@ -696,25 +684,28 @@ async def handle_callback_query(
             reply_markup = keyboard
 
         final_text = full_text.strip() or "Действие выполнено."
-        await sent_message.edit_text(final_text, reply_markup=reply_markup)
+        await response_stream.finalize(
+            final_text,
+            reply_markup=reply_markup,
+        )
 
     except httpx.TimeoutException:
         logger.error("Таймаут при обработке callback")
-        await sent_message.edit_text("Превышено время ожидания ответа от сервера.")
+        await response_stream.finalize("Превышено время ожидания ответа от сервера.")
     except httpx.HTTPStatusError as e:
         status_code = e.response.status_code
         logger.error(f"Ошибка HTTP при обработке callback: статус {status_code}")
-        await sent_message.edit_text(f"Ошибка сервера (код {status_code}). Попробуйте позже.")
+        await response_stream.finalize(f"Ошибка сервера (код {status_code}). Попробуйте позже.")
     except httpx.RequestError as e:
         logger.error(f"Сетевая ошибка при обработке callback: {e}")
-        await sent_message.edit_text("Не удалось соединиться с сервером.")
+        await response_stream.finalize("Не удалось соединиться с сервером.")
     except asyncio.TimeoutError:
         logger.error("Таймаут асинхронной операции")
-        await sent_message.edit_text("Превышено время ожидания.")
+        await response_stream.finalize("Превышено время ожидания.")
     except Exception as e:
         logger.error(f"Неизвестная ошибка при обработке callback: {e}", exc_info=True)
         try:
-            await sent_message.edit_text("Произошла непредвиденная ошибка.")
+            await response_stream.finalize("Произошла непредвиденная ошибка.")
         except Exception:
             pass
 

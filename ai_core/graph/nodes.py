@@ -11,6 +11,8 @@ from ai_core.graph.prompts import (
     RAG_QUERY_EXTRACTOR_PROMPT,
 )
 from ai_core.graph.state import AgentState
+from ai_core.skills import build_skill_discovery_prompt, filter_stale_skill_messages
+from admin_panel.skills import AgentSkill
 from RAG import BuildAgentContextQuery
 from pydantic import ValidationError
 from ai_core.graph.rag_query import RagSearchRequest
@@ -160,17 +162,22 @@ class AgentNode:
         persona_prompt: str = DEFAULT_PERSONA_PROMPT,
         core_prompt: str = CORE_SYSTEM_PROMPT,
         rag_instructions: str = "",
+        skills: tuple[AgentSkill, ...] = (),
     ) -> None:
         self.llm = llm
         self.persona_prompt = persona_prompt
         self.core_prompt = core_prompt
         self.rag_instructions = rag_instructions
+        self.skills = skills
 
     async def __call__(self, state: AgentState) -> dict:
         messages = [
             SystemMessage(content=self.core_prompt),
             SystemMessage(content=self.persona_prompt),
         ]
+        skill_discovery_prompt = build_skill_discovery_prompt(self.skills)
+        if skill_discovery_prompt:
+            messages.append(SystemMessage(content=skill_discovery_prompt))
         rag_context = state.get("rag_context") or ""
         if rag_context:
             additional = (
@@ -184,7 +191,7 @@ class AgentNode:
                          "Если в контексте нет ответа, не выдумывай.\n\n"
                          f"{rag_context}{additional}")
             ))
-        messages.extend(state.get("messages", []))
+        messages.extend(filter_stale_skill_messages(state.get("messages", []), self.skills))
         response = await self.llm.ainvoke(messages)
         return {"messages": [response], "answer": getattr(response, "content", "")}
 

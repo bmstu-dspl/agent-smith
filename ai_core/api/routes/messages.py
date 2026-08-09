@@ -111,9 +111,27 @@ async def _stream_agent_response(
     accumulated_chunks: list[str] = []
 
     async def on_tool_call(name: str, args: dict, result: str) -> None:
+        audit_result = result
+        if name == "load_skill":
+            try:
+                parsed = json.loads(result)
+            except (TypeError, json.JSONDecodeError):
+                parsed = {"status": "invalid_tool_output"}
+            if isinstance(parsed, dict):
+                audit_result = json.dumps(
+                    {
+                        key: parsed[key]
+                        for key in ("status", "skill_id", "name", "version")
+                        if key in parsed
+                    },
+                    ensure_ascii=False,
+                )
         try:
             await memory.messages.append_tool_call(
-                payload.session_id, tool_name=name, tool_args=args, tool_result=result
+                payload.session_id,
+                tool_name=name,
+                tool_args=args,
+                tool_result=audit_result,
             )
         except Exception:
             logger.exception("failed to persist tool call session_id=%s tool=%s", payload.session_id, name)

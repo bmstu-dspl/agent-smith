@@ -76,6 +76,7 @@ def dashboard_html(username: str, role: str) -> str:
   <button data-tab="agent">Agent settings</button>
   <button data-tab="rag-settings">RAG settings</button>
   <button data-tab="rag-documents">RAG documents</button>
+  <button data-tab="skills">Skills</button>
   <button data-tab="mcp">MCP servers</button>
   <button data-tab="admins">Administrators</button>
 </nav>
@@ -144,6 +145,19 @@ def dashboard_html(username: str, role: str) -> str:
     </form>
     <pre id="rag-search-results" class="muted"></pre>
   </section>
+  <section id="skills">
+    <h2>Agent Skills</h2>
+    <p class="muted">Name and description are always available for discovery. Markdown instructions are loaded only when the agent activates the skill. Keep instructions focused; fewer than 500 lines is recommended.</p>
+    <form id="skill-form" class="grid">
+      <input name="skill_id" type="hidden">
+      <label>Name <input name="name" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" maxlength="64" placeholder="room-availability" required></label>
+      <label>Status <select name="enabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
+      <label class="wide">Description <textarea name="description" maxlength="1024" required></textarea></label>
+      <label class="wide">Markdown instructions <textarea name="instructions" maxlength="100000" required></textarea></label>
+      <div class="wide actions"><button class="primary">Save skill</button><button id="skill-cancel" type="button">Clear</button></div>
+    </form>
+    <table><thead><tr><th>Skill</th><th>Version</th><th>Status</th><th>Actions</th></tr></thead><tbody id="skills-body"></tbody></table>
+  </section>
   <section id="mcp">
     <h2>MCP servers</h2>
     <form id="mcp-form" class="grid">
@@ -169,6 +183,7 @@ def dashboard_html(username: str, role: str) -> str:
 <div id="notice" role="status"></div>
 <script>
 let csrf = "";
+let skillCatalog = {{revision:0, skills:[]}};
 const notice = (message, error=false) => {{
   const element = document.getElementById("notice");
   element.textContent = message; element.className = error ? "error" : "";
@@ -287,12 +302,39 @@ async function loadMcp() {{
     actions.append(toggle,remove);
   }}
 }}
+function clearSkillForm() {{
+  const form=document.getElementById("skill-form"); form.reset(); form.elements.skill_id.value=""; form.elements.enabled.value="true"; form.elements.enabled.disabled=false;
+}}
+async function loadSkills() {{
+  skillCatalog=await api("/admin/api/skills");
+  const body=document.getElementById("skills-body"); body.replaceChildren();
+  for (const skill of skillCatalog.skills) {{
+    const row=body.insertRow(); row.insertCell().textContent=`${{skill.name}}\n${{skill.description}}`; row.insertCell().textContent=skill.version;
+    row.insertCell().textContent=skill.enabled?"enabled":"disabled"; const actions=row.insertCell();
+    const edit=document.createElement("button"); edit.textContent="Edit";
+    edit.onclick=()=>{{const form=document.getElementById("skill-form"); for(const key of ["skill_id","name","description","instructions"]) form.elements[key].value=skill[key]; form.elements.enabled.value=String(skill.enabled); form.elements.enabled.disabled=true; form.scrollIntoView({{behavior:"smooth"}});}};
+    const toggle=document.createElement("button"); toggle.textContent=skill.enabled?"Disable":"Enable";
+    toggle.onclick=async()=>{{skillCatalog=await api(`/admin/api/skills/${{skill.skill_id}}/toggle`,{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify({{revision:skillCatalog.revision,enabled:!skill.enabled}})}});await loadSkills();}};
+    const remove=document.createElement("button"); remove.className="danger"; remove.textContent="Delete";
+    remove.onclick=async()=>{{if(confirm("Delete skill permanently?")){{skillCatalog=await api(`/admin/api/skills/${{skill.skill_id}}`,{{method:"DELETE",headers:{{"Content-Type":"application/json"}},body:JSON.stringify({{revision:skillCatalog.revision}})}});clearSkillForm();await loadSkills();}}}};
+    actions.append(edit,toggle,remove);
+  }}
+}}
+document.getElementById("skill-form").onsubmit=async event=>{{
+  event.preventDefault(); try {{
+    const data=jsonForm(event.target); const skillId=data.skill_id; delete data.skill_id; data.enabled=data.enabled==="true"; data.revision=skillCatalog.revision;
+    const path=skillId?`/admin/api/skills/${{skillId}}`:"/admin/api/skills"; const method=skillId?"PUT":"POST";
+    if(skillId) delete data.enabled;
+    skillCatalog=await api(path,{{method,headers:{{"Content-Type":"application/json"}},body:JSON.stringify(data)}});clearSkillForm();notice("Skill saved and available on the next agent request.");await loadSkills();
+  }} catch(error) {{notice(error.message,true); await loadSkills();}}
+}};
+document.getElementById("skill-cancel").onclick=clearSkillForm;
 document.getElementById("admin-form").onsubmit = async event => {{
   event.preventDefault();
   try {{ await api("/admin/api/admins",{{method:"POST",headers:{{"Content-Type":"application/json"}},body:JSON.stringify(jsonForm(event.target))}}); event.target.reset(); notice("Administrator created."); }}
   catch(error) {{ notice(error.message,true); }}
 }};
 document.getElementById("logout").onclick = async () => {{ await api("/admin/logout",{{method:"POST"}}); location.href="/admin/login"; }};
-loadSettings().then(() => Promise.all([loadRag(),loadMcp()])).catch(error => notice(error.message,true));
+loadSettings().then(() => Promise.all([loadRag(),loadSkills(),loadMcp()])).catch(error => notice(error.message,true));
 </script>
 </body></html>"""

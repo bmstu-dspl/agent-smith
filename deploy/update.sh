@@ -229,6 +229,12 @@ if ! docker network inspect mcp-network >/dev/null 2>&1; then
 else
     say "external Docker network already exists: mcp-network"
 fi
+if ! docker network inspect travelline-cache >/dev/null 2>&1; then
+    docker network create travelline-cache >/dev/null
+    say "created external Docker network: travelline-cache"
+else
+    say "external Docker network already exists: travelline-cache"
+fi
 
 step "database-backup" "Create pre-deploy PostgreSQL backup"
 postgres_container="$(docker compose ps -q postgres 2>/dev/null || true)"

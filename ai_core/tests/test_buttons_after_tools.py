@@ -7,15 +7,19 @@ from ai_core.api.routes.messages import router
 
 
 class FakeMessages:
+    def __init__(self):
+        self.tool_calls = []
+
     async def append_tool_call(self, *args, **kwargs) -> None:
-        return None
+        self.tool_calls.append(kwargs)
 
     async def append_message(self, *args, **kwargs) -> None:
         return None
 
 
 class FakeMemory:
-    messages = FakeMessages()
+    def __init__(self):
+        self.messages = FakeMessages()
 
 
 class McpThenAskUserGraph:
@@ -79,3 +83,55 @@ def test_buttons_are_streamed_after_an_mcp_tool_result() -> None:
         "Priority",
     ]
     assert text == "Which option do you prefer?"
+
+
+class LoadSkillGraph:
+    async def adecide_buttons(self, payload):
+        return []
+
+    async def astream_response(self, payload, on_tool_call=None, on_ask_user=None):
+        await on_tool_call(
+            "load_skill",
+            {"name": "room-availability"},
+            json.dumps(
+                {
+                    "status": "loaded",
+                    "skill_id": "skill-1",
+                    "name": "room-availability",
+                    "version": 4,
+                    "instructions": "secret full workflow body",
+                }
+            ),
+        )
+        yield "Ready."
+
+
+def test_load_skill_audit_entry_omits_the_full_instruction_body() -> None:
+    app = FastAPI()
+    app.include_router(router)
+    app.state.graph = LoadSkillGraph()
+    memory = FakeMemory()
+    app.state.memory = memory
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/agent/process",
+            json={"session_id": "skill-audit", "user_message": "Find a room"},
+        )
+
+    assert response.status_code == 200
+    assert memory.messages.tool_calls == [
+        {
+            "tool_name": "load_skill",
+            "tool_args": {"name": "room-availability"},
+            "tool_result": json.dumps(
+                {
+                    "status": "loaded",
+                    "skill_id": "skill-1",
+                    "name": "room-availability",
+                    "version": 4,
+                },
+                ensure_ascii=False,
+            ),
+        }
+    ]

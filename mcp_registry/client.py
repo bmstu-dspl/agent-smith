@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TOOL_CALL_TIMEOUT_SECONDS = 40.0
 MAX_DESCRIPTION_LENGTH = 500
-MAX_RESULT_LENGTH = 4000
+MAX_RESULT_LENGTH = 32_768
 MAX_TOOL_NAME_LENGTH = 64 
 SUPPORTED_TRANSPORT_TYPES = {"sse"}  # http и stdio пока не реализованы
 

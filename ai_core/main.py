@@ -16,6 +16,7 @@ from ai_core.api.routes import messages
 from ai_core.runtime_config import LiveGraphProvider
 from app_runtime import AppRuntime
 from admin_panel.settings import SettingsStore
+from admin_panel.skills import SkillStore
 from mcp_registry import McpServerStore
 from mcp_registry.client import McpToolProvider
 from mcp_registry.listener import McpServerChangeListener
@@ -32,13 +33,12 @@ async def lifespan(app: FastAPI):
     )
     if not encryption_key:
         raise RuntimeError("CONFIG_SECRETS_ENCRYPTION_KEY is required")
-    settings_store = SettingsStore(
-        sessionmaker(bind=runtime.database.engine, expire_on_commit=False),
-        encryption_key,
-    )
+    session_factory = sessionmaker(bind=runtime.database.engine, expire_on_commit=False)
+    settings_store = SettingsStore(session_factory, encryption_key)
+    skill_store = SkillStore(session_factory)
     mcp_store = McpServerStore(runtime.database)
 
-    async def graph_factory(agent_settings, rag_settings):
+    async def graph_factory(agent_settings, rag_settings, skills):
         mcp_tools = await McpToolProvider(mcp_store).get_all_tools()
         return build_graph(
             checkpointer=memory.checkpointer,
@@ -46,13 +46,19 @@ async def lifespan(app: FastAPI):
             mcp_tools=mcp_tools,
             agent_settings=agent_settings,
             rag_settings=rag_settings,
+            skills=skills,
         )
 
     app.state.memory = memory
     app.state.mcp_store = mcp_store
     app.state.rag_memory = runtime.memory
     app.state.runtime = runtime
-    app.state.graph_provider = LiveGraphProvider(settings_store, graph_factory)
+    app.state.skill_store = skill_store
+    app.state.graph_provider = LiveGraphProvider(
+        settings_store,
+        graph_factory,
+        skill_store=skill_store,
+    )
     app.state.graph = await app.state.graph_provider.get_graph()
 
     async def _on_mcp_servers_changed() -> None:

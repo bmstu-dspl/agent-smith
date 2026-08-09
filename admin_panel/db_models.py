@@ -76,3 +76,52 @@ class ServiceSettingsModel(OrmBase):
         server_default=func.now(),
         onupdate=func.now(),
     )
+
+
+class SkillCatalogModel(OrmBase):
+    __tablename__ = "agent_skill_catalog"
+
+    catalog_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_by: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("admin_users.admin_id", ondelete="SET NULL"),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class AgentSkillModel(OrmBase):
+    __tablename__ = "agent_skills"
+    __table_args__ = (
+        CheckConstraint("version >= 1", name="agent_skill_version_positive"),
+        Index("ix_agent_skills_enabled", "enabled"),
+    )
+
+    skill_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    instructions: Mapped[str] = mapped_column(Text, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_by: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("admin_users.admin_id", ondelete="SET NULL"),
+    )
+    updated_by: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("admin_users.admin_id", ondelete="SET NULL"),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )

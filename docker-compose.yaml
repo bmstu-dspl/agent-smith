@@ -81,6 +81,7 @@ services:
     logging: *default-logging
     networks:
       - backend
+      - travelline-cache
 
   migrate:
     <<: *application
@@ -329,4 +330,6 @@ networks:
   egress:
   edge:
   mcp-network:
+    external: true
+  travelline-cache:
     external: true
