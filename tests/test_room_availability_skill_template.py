@@ -35,4 +35,14 @@ def test_room_availability_template_loads_details_once_per_visible_page() -> Non
     assert "`get_room_details`" in instructions
     assert "не более 3 `room_id`" in instructions
     assert "один раз для текущей тройки" in instructions
+    assert "именно в текущем ходе агента" in instructions
+    assert "Предыдущий вызов `get_room_details` не считается" in instructions
     assert "`image_urls`" in instructions
+
+
+def test_room_availability_template_tracks_unseen_room_ids_between_pages() -> None:
+    instructions = SKILLS_DOC.read_text(encoding="utf-8")
+
+    assert "упорядоченную очередь уникальных `room_id`" in instructions
+    assert "следующей тройки непоказанных `room_id`" in instructions
+    assert "не повторяй ранее показанные категории" in instructions

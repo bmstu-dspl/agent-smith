@@ -97,8 +97,8 @@ class SessionMiddleware(BaseMiddleware):
             return await self._create_session_redis(user_id)
             
         except Exception as e:
-            logger.error(f"Redis error: {e}, falling back to in-memory")
-            return self._get_or_create_session_memory(user_id)
+            logger.error("Redis session lookup failed: %s", e)
+            raise
     
     def _get_or_create_session_memory(self, user_id: int) -> str:
         """In-memory fallback"""
@@ -116,10 +116,7 @@ class SessionMiddleware(BaseMiddleware):
     async def rotate_session(self, user_id: int) -> str:
         """Start a fresh agent context while retaining the old session records."""
         if self._redis_available:
-            try:
-                return await self._create_session_redis(user_id)
-            except Exception as error:
-                logger.error("Redis session rotation failed: %s", error)
+            return await self._create_session_redis(user_id)
         return self._create_session_memory(user_id)
 
     async def _create_session_redis(self, user_id: int) -> str:

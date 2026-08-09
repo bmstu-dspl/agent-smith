@@ -1,420 +1,391 @@
-import logging
-from typing import Dict, Optional, List
-from aiogram import Bot, F
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from datetime import datetime
+from __future__ import annotations
+
 import asyncio
+import json
+import logging
+from datetime import timezone
+from typing import Any
+
+from aiogram import Bot
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, User
+
 
 logger = logging.getLogger(__name__)
 
+
 class EscalationService:
-    """Сервис для эскалации чата на менеджеров в группе"""
-    
-    def __init__(self, bot: Bot, manager_group_id: int):
+    """Creates manager tickets and persists all open routing state in Redis."""
+
+    USER_KEY_PREFIX = "agent-smith:escalation:v1:user:"
+
+    def __init__(self, bot: Bot, manager_group_id: int | None, *, redis: Any) -> None:
         self.bot = bot
         self.manager_group_id = manager_group_id
-        self.active_escalations: Dict[int, Dict] = {}  # user_id -> {thread_id, status, ...}
-        self.user_threads: Dict[int, int] = {}  # user_id -> thread_id
-        self.thread_users: Dict[int, int] = {}  # thread_id -> user_id
-        self.is_initialized = bool(manager_group_id)
-        
+        self.redis = redis
+        self.active_escalations: dict[int, dict[str, Any]] = {}
+        self.user_threads: dict[int, int] = {}
+        self.thread_users: dict[int, int] = {}
+        self.is_initialized = bool(manager_group_id and redis)
+        self._lock = asyncio.Lock()
+
         if self.is_initialized:
-            logger.info(f"EscalationService created with group {manager_group_id}")
+            logger.info("EscalationService created with group %s and Redis storage", manager_group_id)
         else:
-            logger.warning("EscalationService created WITHOUT manager group ID!")
+            logger.warning("EscalationService created without manager group or Redis")
 
     def update_manager_group_id(self, manager_group_id: int | None) -> None:
         self.manager_group_id = manager_group_id
-        self.is_initialized = bool(manager_group_id)
-    
+        self.is_initialized = bool(manager_group_id and self.redis)
+
+    async def initialize(self) -> None:
+        """Restore pending/active tickets and thread routing after a restart."""
+        if not self.is_initialized:
+            raise RuntimeError("manager group and Redis are required for escalation")
+
+        restored = 0
+        async for raw_key in self.redis.scan_iter(match=f"{self.USER_KEY_PREFIX}*"):
+            raw_value = await self.redis.get(raw_key)
+            if not raw_value:
+                continue
+            try:
+                payload = json.loads(self._decode(raw_value))
+                user_id = int(payload["user_id"])
+                if payload.get("status") not in {"pending", "active"}:
+                    continue
+                if int(payload.get("group_chat_id") or 0) != int(self.manager_group_id):
+                    logger.warning("Skipping escalation %s from another manager group", user_id)
+                    continue
+            except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+                logger.exception("Invalid persisted escalation at key %r", raw_key)
+                continue
+
+            self.active_escalations[user_id] = payload
+            thread_id = payload.get("thread_id")
+            if thread_id:
+                thread_id = int(thread_id)
+                self.user_threads[user_id] = thread_id
+                self.thread_users[thread_id] = user_id
+            restored += 1
+
+        logger.info("Restored %s active escalation(s) from Redis", restored)
+
     async def escalate_to_managers(
-        self, 
-        user_message: Message, 
-        reason: str = "Пользователь запросил помощь менеджера"
+        self,
+        user_message: Message,
+        reason: str = "Пользователь запросил помощь менеджера",
+        *,
+        summary: str = "",
+        history: list[dict[str, Any]] | None = None,
+        notify_user: bool = True,
+        user: User | None = None,
+        user_text: str | None = None,
     ) -> bool:
-        """Создает запрос в общем чате группы менеджеров"""
-        
+        """Create a durable pending ticket and notify the manager group."""
         if not self.is_initialized:
             logger.error("Escalation service not initialized")
-            await user_message.answer("Сервис поддержки временно недоступен.")
+            if notify_user:
+                await user_message.answer("Сервис поддержки временно недоступен.")
             return False
-        
-        user_id = user_message.from_user.id
-        
-        # Проверяем, есть ли уже активная эскалация
-        if user_id in self.active_escalations:
-            if self.active_escalations[user_id]["status"] in ["pending", "active"]:
-                await user_message.answer("У вас уже есть активный запрос к менеджеру.")
-                return False
-        
-        try:
-            user_name = user_message.from_user.full_name or "Неизвестно"
-            user_text = user_message.text or "Нет текста"
-            user_username = user_message.from_user.username or "нет username"
-            
-            logger.info(f"Создаем запрос в группе {self.manager_group_id} для пользователя {user_id}")
-            
-            # Отправляем сообщение в общий чат (general)
-            group_message = await self.bot.send_message(
-                chat_id=self.manager_group_id,
-                text=(
-                    f"НОВЫЙ ЗАПРОС ОТ ПОЛЬЗОВАТЕЛЯ\n\n"
-                    f"Пользователь: {user_name}\n"
-                    f"ID: {user_id}\n"
-                    f"Username: @{user_username}\n"
-                    f"Сообщение: {user_text}\n"
-                    f"Время: {user_message.date.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-                    f"Для начала работы с запросом:\n"
-                    f"Нажмите кнопку 'Принять запрос' для создания отдельного треда.\n\n"
-                    f"После принятия запроса будет создан отдельный тред для общения с пользователем."
-                ),
-                reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[
-                        [
-                            InlineKeyboardButton(
-                                text="Принять запрос",
-                                callback_data=f"take_ticket_{user_id}"
-                            )
-                        ],
-                        [
-                            InlineKeyboardButton(
-                                text="Отклонить",
-                                callback_data=f"reject_ticket_{user_id}"
-                            )
+
+        actual_user = user or user_message.from_user
+        if actual_user is None:
+            logger.error("Cannot escalate a message without a Telegram user")
+            return False
+        user_id = actual_user.id
+
+        async with self._lock:
+            existing = self.active_escalations.get(user_id)
+            if existing and existing.get("status") in {"pending", "active"}:
+                if notify_user:
+                    await user_message.answer("У вас уже есть активный запрос к менеджеру.")
+                return True
+
+            user_name = actual_user.full_name or "Неизвестно"
+            username = actual_user.username or "нет username"
+            visible_text = user_text or user_message.text or "Нет текста"
+            context = self._format_context(summary=summary, history=history or [])
+
+            group_text = (
+                "НОВЫЙ ЗАПРОС ОТ ПОЛЬЗОВАТЕЛЯ\n\n"
+                f"Пользователь: {user_name}\n"
+                f"ID: {user_id}\n"
+                f"Username: @{username}\n"
+                f"Сообщение: {visible_text}\n"
+                f"Причина: {reason}\n"
+                f"Время: {user_message.date.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"{context}\n\n"
+                "Нажмите «Принять запрос», чтобы создать отдельный тред."
+            )
+
+            try:
+                group_message = await self.bot.send_message(
+                    chat_id=self.manager_group_id,
+                    text=self._truncate(group_text),
+                    parse_mode=None,
+                    reply_markup=InlineKeyboardMarkup(
+                        inline_keyboard=[
+                            [InlineKeyboardButton(text="Принять запрос", callback_data=f"take_ticket_{user_id}")],
+                            [InlineKeyboardButton(text="Отклонить", callback_data=f"reject_ticket_{user_id}")],
                         ]
-                    ]
+                    ),
                 )
-            )
-            
-            # Сохраняем информацию об эскалации (пока без треда)
-            self.active_escalations[user_id] = {
-                "status": "pending",
-                "user_message_id": user_message.message_id,
-                "user_chat_id": user_message.chat.id,
-                "user_full_name": user_name,
-                "user_username": user_username,
-                "reason": reason,
-                "timestamp": user_message.date,
-                "group_message_id": group_message.message_id,
-                "group_chat_id": self.manager_group_id,
-                "thread_id": None,  # Тред будет создан позже
-                "thread_name": None
-            }
-            
-            await user_message.answer(
-                "Ваш запрос передан менеджерам. Ожидайте ответа специалиста."
-            )
-            
-            logger.info(f"Запрос создан: user={user_id}, group_message_id={group_message.message_id}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Ошибка при создании запроса: {e}", exc_info=True)
-            await user_message.answer(
-                "Произошла ошибка при передаче запроса менеджерам. Попробуйте позже."
-            )
-            return False
-    
+                escalation = {
+                    "user_id": user_id,
+                    "status": "pending",
+                    "user_message_id": user_message.message_id,
+                    "user_chat_id": user_message.chat.id,
+                    "user_full_name": user_name,
+                    "user_username": username,
+                    "reason": reason,
+                    "summary": summary,
+                    "timestamp": user_message.date.astimezone(timezone.utc).isoformat(),
+                    "group_message_id": group_message.message_id,
+                    "group_chat_id": self.manager_group_id,
+                    "thread_id": None,
+                    "thread_name": None,
+                }
+                self.active_escalations[user_id] = escalation
+                await self._persist(user_id)
+            except Exception:
+                # Never leave a process-local ticket that Redis did not accept:
+                # after a restart it would disappear, while retries would be
+                # incorrectly treated as an already active escalation.
+                self.active_escalations.pop(user_id, None)
+                logger.exception("Failed to create escalation for user %s", user_id)
+                if notify_user:
+                    await user_message.answer(
+                        "Произошла ошибка при передаче запроса менеджерам. Попробуйте позже."
+                    )
+                return False
+
+        if notify_user:
+            await user_message.answer("Ваш запрос передан менеджерам. Ожидайте ответа специалиста.")
+        logger.info("Escalation created: user=%s, group_message_id=%s", user_id, group_message.message_id)
+        return True
+
     async def take_ticket(self, callback: CallbackQuery, user_id: int) -> bool:
-        """Менеджер принимает запрос и создает отдельный тред"""
-        if user_id not in self.active_escalations:
-            await callback.answer("Запрос уже закрыт или не существует")
-            return False
-        
-        escalation = self.active_escalations[user_id]
-        if escalation["status"] != "pending":
-            await callback.answer(f"Запрос уже {escalation['status']}")
-            return False
-        
-        try:
+        async with self._lock:
+            escalation = self.active_escalations.get(user_id)
+            if not escalation:
+                await callback.answer("Запрос уже закрыт или не существует")
+                return False
+            if escalation["status"] != "pending":
+                await callback.answer(f"Запрос уже {escalation['status']}")
+                return False
+
             manager_name = callback.from_user.full_name
             manager_id = callback.from_user.id
-            
-            # Создаем название треда
             thread_name = f"Пользователь {escalation['user_full_name']} ({user_id})"
-            
-            logger.info(f"Создаем тред '{thread_name}' для пользователя {user_id}")
-            
-            # Шаг 1: Создаем тред
             try:
-                topic = await self.bot.create_forum_topic(
-                    chat_id=self.manager_group_id,
-                    name=thread_name
-                )
+                topic = await self.bot.create_forum_topic(chat_id=self.manager_group_id, name=thread_name)
                 thread_id = topic.message_thread_id
-                logger.info(f"Тред создан: thread_id={thread_id}")
-            except Exception as e:
-                logger.error(f"Ошибка при создании треда: {e}")
-                await callback.answer("Не удалось создать тред. Проверьте настройки группы.")
-                return False
-            
-            # Шаг 2: Отправляем приветственное сообщение в тред
-            await self.bot.send_message(
-                chat_id=self.manager_group_id,
-                message_thread_id=thread_id,
-                text=(
-                    f"Пользователь: {escalation['user_full_name']}\n"
-                    f"ID: {user_id}\n"
-                    f"Username: @{escalation['user_username']}\n\n"
-                    f"Это тред для общения с пользователем.\n"
-                    f"Все сообщения, которые вы напишете в этом треде, "
-                    f"будут пересылаться пользователю.\n\n"
-                    f"Для завершения диалога используйте /close_ticket"
-                )
-            )
-            
-            # Шаг 3: Обновляем исходное сообщение в general (УДАЛЯЕМ КНОПКИ)
-            try:
-                new_text = callback.message.text + f"\n\nПринял в работу: {manager_name}\n"
-                new_text += f"Ссылка на тред: https://t.me/c/{str(self.manager_group_id).replace('-100', '')}/{thread_id}"
-                await callback.message.edit_text(
-                    text=new_text,
-                    reply_markup=None
-                )
-                logger.info(f"Сообщение в general обновлено, кнопки удалены")
-            except Exception as e:
-                logger.error(f"Ошибка при обновлении сообщения: {e}")
-            
-            # Шаг 4: Обновляем информацию об эскалации
-            escalation["status"] = "active"
-            escalation["manager_id"] = manager_id
-            escalation["manager_name"] = manager_name
-            escalation["thread_id"] = thread_id
-            escalation["thread_name"] = thread_name
-            
-            # ВАЖНО: Сохраняем связи для поиска пользователя по thread_id
-            self.user_threads[user_id] = thread_id
-            self.thread_users[thread_id] = user_id
-            
-            logger.info(f"Связи обновлены: user_threads[{user_id}]={thread_id}, thread_users[{thread_id}]={user_id}")
-            
-            # Шаг 5: Уведомляем пользователя
-            try:
                 await self.bot.send_message(
-                    chat_id=escalation["user_chat_id"],
-                    text=f"Менеджер {manager_name} принял ваш запрос и создал отдельный чат для общения."
+                    chat_id=self.manager_group_id,
+                    message_thread_id=thread_id,
+                    parse_mode=None,
+                    text=(
+                        f"Пользователь: {escalation['user_full_name']}\n"
+                        f"ID: {user_id}\n"
+                        f"Username: @{escalation['user_username']}\n\n"
+                        "Все сообщения в этом треде пересылаются пользователю.\n"
+                        "Для завершения диалога используйте /close_ticket"
+                    ),
                 )
-            except Exception as e:
-                logger.error(f"Не удалось уведомить пользователя: {e}")
-            
-            await callback.answer("Запрос принят, тред создан")
-            logger.info(f"Запрос принят: user={user_id}, manager={manager_id}, thread={thread_id}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Ошибка при принятии запроса: {e}", exc_info=True)
-            await callback.answer("Ошибка при принятии запроса")
-            return False
-    
+
+                escalation.update(
+                    status="active",
+                    manager_id=manager_id,
+                    manager_name=manager_name,
+                    thread_id=thread_id,
+                    thread_name=thread_name,
+                )
+                self.user_threads[user_id] = thread_id
+                self.thread_users[thread_id] = user_id
+                await self._persist(user_id)
+
+                try:
+                    current_text = callback.message.text or "Запрос пользователя"
+                    thread_link = f"https://t.me/c/{str(self.manager_group_id).replace('-100', '')}/{thread_id}"
+                    await callback.message.edit_text(
+                        text=f"{current_text}\n\nПринял в работу: {manager_name}\nСсылка на тред: {thread_link}",
+                        parse_mode=None,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    logger.exception("Failed to update manager-group ticket message")
+
+                try:
+                    await self.bot.send_message(
+                        chat_id=escalation["user_chat_id"],
+                        text=f"Менеджер {manager_name} принял ваш запрос и подключился к диалогу.",
+                        parse_mode=None,
+                    )
+                except Exception:
+                    logger.warning("Could not notify user %s that ticket was accepted", user_id, exc_info=True)
+                await callback.answer("Запрос принят, тред создан")
+                logger.info("Escalation accepted: user=%s manager=%s thread=%s", user_id, manager_id, thread_id)
+                return True
+            except Exception:
+                logger.exception("Failed to accept escalation for user %s", user_id)
+                await callback.answer("Не удалось принять запрос. Проверьте настройки группы.")
+                return False
+
     async def reject_ticket(self, callback: CallbackQuery, user_id: int) -> bool:
-        """Менеджер отклоняет запрос"""
-        if user_id not in self.active_escalations:
+        escalation = self.active_escalations.get(user_id)
+        if not escalation:
             await callback.answer("Запрос уже закрыт или не существует")
             return False
-        
-        escalation = self.active_escalations[user_id]
         if escalation["status"] != "pending":
             await callback.answer(f"Запрос уже {escalation['status']}")
             return False
-        
+
+        manager_name = callback.from_user.full_name
         try:
-            manager_name = callback.from_user.full_name
-            
-            # Обновляем сообщение в general (УДАЛЯЕМ КНОПКИ)
-            try:
-                new_text = callback.message.text + f"\n\nОтклонен: {manager_name}"
-                await callback.message.edit_text(
-                    text=new_text,
-                    reply_markup=None
-                )
-                logger.info(f"Сообщение в general обновлено, кнопки удалены")
-            except Exception as e:
-                logger.error(f"Ошибка при обновлении сообщения: {e}")
-            
-            # Закрываем запрос
-            await self.close_escalation(user_id, f"отклонен менеджером {manager_name}")
-            
-            # Уведомляем пользователя
-            try:
-                await self.bot.send_message(
-                    chat_id=escalation["user_chat_id"],
-                    text="Ваш запрос был отклонен менеджером. Попробуйте позже."
-                )
-            except Exception as e:
-                logger.error(f"Не удалось уведомить пользователя: {e}")
-            
-            await callback.answer("Запрос отклонен")
-            logger.info(f"Запрос отклонен: user={user_id}, manager={callback.from_user.id}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Ошибка при отклонении запроса: {e}", exc_info=True)
-            await callback.answer("Ошибка при отклонении запроса")
-            return False
-    
-    async def forward_message_to_user(self, manager_message: Message) -> bool:
-        """Пересылает сообщение от менеджера пользователю"""
-        thread_id = manager_message.message_thread_id
-        
-        # Проверяем, не является ли сообщение от бота
-        bot_id = (await self.bot.me()).id
-        if manager_message.from_user and manager_message.from_user.id == bot_id:
-            logger.info(f"Игнорируем сообщение от бота в треде {thread_id}")
-            return False
-        
-        logger.info(f"Попытка пересылки сообщения из треда {thread_id}")
-        
-        if not thread_id:
-            await manager_message.reply(
-                "Это сообщение не в треде.\n"
-                "Чтобы ответить пользователю, напишите сообщение в его треде."
+            current_text = callback.message.text or "Запрос пользователя"
+            await callback.message.edit_text(
+                text=f"{current_text}\n\nОтклонен: {manager_name}",
+                parse_mode=None,
+                reply_markup=None,
             )
-            return False
-        
-        # Ищем пользователя по thread_id
-        user_id = self.thread_users.get(thread_id)
-        
-        logger.info(f"Поиск пользователя по thread_id {thread_id}: user_id={user_id}")
-        logger.info(f"Текущие связи thread_users: {self.thread_users}")
-        
-        if not user_id:
-            # Не отправляем сообщение об ошибке, если это сообщение от бота
-            if manager_message.from_user and manager_message.from_user.id != bot_id:
-                await manager_message.reply(
-                    f"Тред {thread_id} не привязан к пользователю.\n"
-                    f"Используйте /tickets_status для проверки активных запросов."
-                )
-            return False
-        
-        if user_id not in self.active_escalations:
-            await manager_message.reply("Запрос уже закрыт.")
-            return False
-        
-        escalation = self.active_escalations[user_id]
-        if escalation["status"] != "active":
-            await manager_message.reply(f"Запрос не активен (статус: {escalation['status']})")
-            return False
-        
+        except Exception:
+            logger.exception("Failed to update rejected ticket message")
+
+        await self.close_escalation(user_id, f"отклонен менеджером {manager_name}")
         try:
-            # Проверяем, не является ли сообщение командой
-            if manager_message.text and manager_message.text.startswith('/'):
-                return False
-            
-            # Пересылаем сообщение пользователю
             await self.bot.send_message(
                 chat_id=escalation["user_chat_id"],
-                text=f"Менеджер {manager_message.from_user.full_name}:\n{manager_message.text}"
+                text="Ваш запрос был отклонен менеджером. Попробуйте позже.",
+                parse_mode=None,
             )
-            
-            logger.info(f"Сообщение переслано пользователю {user_id}")
+        except Exception:
+            logger.warning("Could not notify user %s that ticket was rejected", user_id, exc_info=True)
+        await callback.answer("Запрос отклонен")
+        return True
+
+    async def forward_message_to_user(self, manager_message: Message) -> bool:
+        thread_id = manager_message.message_thread_id
+        bot_id = (await self.bot.me()).id
+        if manager_message.from_user and manager_message.from_user.id == bot_id:
+            return False
+        if not thread_id:
+            await manager_message.reply("Ответьте пользователю внутри его треда.")
+            return False
+
+        user_id = self.thread_users.get(thread_id)
+        escalation = self.active_escalations.get(user_id) if user_id else None
+        if not escalation or escalation.get("status") != "active":
+            await manager_message.reply(f"Тред {thread_id} не привязан к активному запросу.")
+            return False
+        if manager_message.text and manager_message.text.startswith("/"):
+            return False
+
+        try:
+            await self.bot.send_message(
+                chat_id=escalation["user_chat_id"],
+                text=f"Менеджер {manager_message.from_user.full_name}:\n{manager_message.text or ''}",
+                parse_mode=None,
+            )
             return True
-            
-        except Exception as e:
-            logger.error(f"Ошибка при пересылке: {e}")
-            if manager_message.from_user and manager_message.from_user.id != bot_id:
-                await manager_message.reply("Не удалось отправить сообщение пользователю.")
+        except Exception:
+            logger.exception("Failed to forward manager message for thread %s", thread_id)
+            await manager_message.reply("Не удалось отправить сообщение пользователю.")
             return False
-    
+
     async def forward_message_to_manager(self, user_message: Message) -> bool:
-        """Пересылает сообщение от пользователя менеджеру в тред"""
         user_id = user_message.from_user.id
-        
-        if user_id not in self.active_escalations:
-            logger.warning(f"Пользователь {user_id} не в активных эскалациях")
+        escalation = self.active_escalations.get(user_id)
+        if not escalation or escalation.get("status") != "active":
             return False
-        
-        escalation = self.active_escalations[user_id]
-        if escalation["status"] != "active":
-            logger.warning(f"Эскалация для {user_id} не активна: {escalation['status']}")
-            return False
-        
         thread_id = escalation.get("thread_id")
         if not thread_id:
-            logger.warning(f"Нет треда для пользователя {user_id}")
-            await user_message.answer(
-                "Менеджер еще не создал тред для общения. Подождите, пока менеджер примет запрос."
-            )
+            await user_message.answer("Менеджер еще не создал тред. Подождите принятия запроса.")
             return False
-        
         try:
             await self.bot.send_message(
                 chat_id=self.manager_group_id,
                 message_thread_id=thread_id,
-                text=f"{escalation['user_full_name']}:\n{user_message.text}"
+                text=f"{escalation['user_full_name']}:\n{user_message.text or ''}",
+                parse_mode=None,
             )
-            
-            logger.info(f"Сообщение переслано менеджеру: user={user_id}")
             return True
-            
-        except Exception as e:
-            logger.error(f"Ошибка при пересылке: {e}")
+        except Exception:
+            logger.exception("Failed to forward user %s message", user_id)
             return False
-    
+
     async def close_escalation(self, user_id: int, reason: str = "закрыт менеджером") -> bool:
-        """Закрывает эскалацию"""
-        if user_id not in self.active_escalations:
+        escalation = self.active_escalations.get(user_id)
+        if not escalation:
             return False
-        
-        escalation = self.active_escalations[user_id]
         thread_id = escalation.get("thread_id")
-        
-        try:
-            # Если есть тред - отправляем сообщение о закрытии
-            if thread_id:
-                try:
-                    await self.bot.send_message(
-                        chat_id=self.manager_group_id,
-                        message_thread_id=thread_id,
-                        text=f"Диалог закрыт ({reason})"
-                    )
-                except Exception as e:
-                    logger.warning(f"Не удалось отправить сообщение в тред: {e}")
-            
-            escalation["status"] = "closed"
-            
-            # Удаляем связи
-            if user_id in self.user_threads:
-                del self.user_threads[user_id]
-            if thread_id and thread_id in self.thread_users:
-                del self.thread_users[thread_id]
-            
-            logger.info(f"Эскалация закрыта: user={user_id}, причина: {reason}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Ошибка при закрытии эскалации: {e}")
-            return False
-    
+        if thread_id:
+            try:
+                await self.bot.send_message(
+                    chat_id=self.manager_group_id,
+                    message_thread_id=thread_id,
+                    text=f"Диалог закрыт ({reason})",
+                    parse_mode=None,
+                )
+            except Exception:
+                logger.warning("Could not post closure to thread %s", thread_id, exc_info=True)
+
+        self.active_escalations.pop(user_id, None)
+        self.user_threads.pop(user_id, None)
+        if thread_id:
+            self.thread_users.pop(int(thread_id), None)
+        await self.redis.delete(self._user_key(user_id))
+        logger.info("Escalation closed: user=%s reason=%s", user_id, reason)
+        return True
+
     async def get_manager_status(self) -> str:
-        """Получить статус всех запросов"""
         if not self.active_escalations:
             return "Нет активных запросов."
-        
-        status_text = "Статус запросов:\n\n"
-        
-        pending = []
-        active = []
-        closed = []
-        
-        for user_id, esc in self.active_escalations.items():
-            user_info = f"Пользователь: {esc['user_full_name']} (ID: {user_id})"
-            thread_info = f"Тред: {esc.get('thread_name', 'Не создан') if esc.get('thread_id') else 'Не создан'}"
-            
-            if esc["status"] == "pending":
-                pending.append(f"{user_info} - {thread_info}")
-            elif esc["status"] == "active":
-                manager = esc.get("manager_name", "неизвестен")
-                active.append(f"{user_info} - менеджер: {manager} - {thread_info}")
-            elif esc["status"] == "closed":
-                closed.append(f"{user_info} - {thread_info}")
-        
+        pending: list[str] = []
+        active: list[str] = []
+        for user_id, escalation in self.active_escalations.items():
+            user = f"Пользователь: {escalation['user_full_name']} (ID: {user_id})"
+            if escalation["status"] == "pending":
+                pending.append(user)
+            elif escalation["status"] == "active":
+                active.append(f"{user} — менеджер: {escalation.get('manager_name', 'неизвестен')}")
+        parts = []
         if pending:
-            status_text += "В ожидании (" + str(len(pending)) + "):\n" + "\n".join(f"• {p}" for p in pending) + "\n\n"
+            parts.append(f"В ожидании ({len(pending)}):\n" + "\n".join(f"• {item}" for item in pending))
         if active:
-            status_text += "Активные (" + str(len(active)) + "):\n" + "\n".join(f"• {a}" for a in active) + "\n\n"
-        if closed:
-            status_text += "Закрытые (" + str(len(closed)) + "):\n" + "\n".join(f"• {c}" for c in closed) + "\n\n"
-        
-        status_text += f"Всего: {len(self.active_escalations)} запросов"
-        
-        return status_text
+            parts.append(f"Активные ({len(active)}):\n" + "\n".join(f"• {item}" for item in active))
+        parts.append(f"Всего: {len(self.active_escalations)} запросов")
+        return "\n\n".join(parts)
+
+    async def _persist(self, user_id: int) -> None:
+        payload = self.active_escalations[user_id]
+        await self.redis.set(
+            self._user_key(user_id),
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        )
+
+    def _user_key(self, user_id: int) -> str:
+        return f"{self.USER_KEY_PREFIX}{user_id}"
+
+    @staticmethod
+    def _decode(value: Any) -> str:
+        return value.decode("utf-8") if isinstance(value, bytes) else str(value)
+
+    @staticmethod
+    def _truncate(value: str, limit: int = 3900) -> str:
+        return value if len(value) <= limit else value[: limit - 1] + "…"
+
+    @staticmethod
+    def _format_context(*, summary: str, history: list[dict[str, Any]]) -> str:
+        parts: list[str] = []
+        if summary.strip():
+            parts.append(f"\nКраткое резюме:\n{summary.strip()}")
+        if history:
+            labels = {"user": "Пользователь", "assistant": "Бот"}
+            lines = []
+            for item in history[-8:]:
+                role = labels.get(str(item.get("role")), str(item.get("role") or "Сообщение"))
+                content = " ".join(str(item.get("content") or "").split())
+                if content:
+                    lines.append(f"{role}: {content[:500]}")
+            if lines:
+                parts.append("\nПоследние сообщения:\n" + "\n".join(lines))
+        return "".join(parts)

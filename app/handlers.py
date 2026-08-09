@@ -15,6 +15,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
+    User,
 )
 
 from app.middleware.session_middleware import SessionMiddleware
@@ -63,12 +64,36 @@ async def _get_runtime_settings():
     return await _settings_provider.get()
 
 
-def escape_markdown(text: str) -> str:
-    """Экранирует специальные символы для Markdown"""
-    special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
-    for char in special_chars:
-        text = text.replace(char, f'\\{char}')
-    return text
+async def _handle_handoff_event(
+    source_message: Message,
+    state: FSMContext,
+    event: dict,
+    *,
+    user: User | None = None,
+    user_text: str | None = None,
+) -> bool:
+    """Turn the core handoff event into a real durable manager ticket."""
+    esc_service = get_esc_service()
+    runtime_settings = await _get_runtime_settings()
+    if esc_service is None:
+        logger.error("Received handoff event without EscalationService")
+        return False
+    esc_service.update_manager_group_id(
+        runtime_settings.manager_group_id if runtime_settings.enable_escalation else None
+    )
+    success = await esc_service.escalate_to_managers(
+        source_message,
+        reason=str(event.get("reason") or "Пользователь запросил помощь менеджера"),
+        summary=str(event.get("summary") or ""),
+        history=event.get("history") if isinstance(event.get("history"), list) else [],
+        notify_user=False,
+        user=user,
+        user_text=user_text,
+    )
+    if success:
+        await state.set_state(UserStates.with_manager)
+        logger.info("AI handoff created for user %s", (user or source_message.from_user).id)
+    return success
 
 
 # ==================== КОМАНДЫ ДЛЯ ПОЛЬЗОВАТЕЛЕЙ ====================
@@ -229,6 +254,8 @@ async def cmd_close_ticket(message: Message):
         await message.reply("Запрос уже закрыт.")
         return
     
+    escalation = esc_service.active_escalations.get(user_id)
+
     # Закрываем запрос
     await esc_service.close_escalation(
         user_id, 
@@ -238,7 +265,6 @@ async def cmd_close_ticket(message: Message):
     await message.reply(f"Диалог с пользователем {user_id} закрыт.")
     
     # Уведомляем пользователя
-    escalation = esc_service.active_escalations.get(user_id)
     if escalation:
         try:
             await esc_service.bot.send_message(
@@ -395,35 +421,12 @@ async def handle_user_with_manager(
             await state.set_state(UserStates.default)
             return
     
-    # Пересылаем сообщение менеджеру (без лишних уведомлений)
-    try:
-        thread_id = escalation.get("thread_id")
-        safe_name = escape_markdown(escalation['user_full_name'])
-        
-        if thread_id:
-            # Отправляем в тред
-            await message.bot.send_message(
-                chat_id=esc_service.manager_group_id,
-                message_thread_id=thread_id,
-                text=f"{safe_name}:\n{message.text}"
-            )
-            logger.info(f"Сообщение от пользователя {user_id} переслано менеджеру в тред {thread_id}")
-        else:
-            # Если треда нет
-            await message.bot.send_message(
-                chat_id=esc_service.manager_group_id,
-                text=f"{safe_name}:\n{message.text}\n\n"
-                     f"Тред не создан! Менеджер должен принять запрос."
-            )
-            logger.warning(f"Нет треда для пользователя {user_id}")
-        
-    except Exception as e:
-        logger.error(f"Ошибка при пересылке сообщения менеджеру: {e}")
+    if not await esc_service.forward_message_to_manager(message):
         await message.answer("Не удалось отправить сообщение менеджеру. Попробуйте позже.")
 
 
 # Обработчик сообщений от пользователей в обычном режиме (AI)
-@router.message(UserStates.default, F.text)
+@router.message(StateFilter(UserStates.default, None), F.text)
 async def handle_user_default(
     message: Message, 
     state: FSMContext,
@@ -432,6 +435,11 @@ async def handle_user_default(
 ):
     """Обрабатывает сообщения от пользователя в обычном режиме (AI)"""
     
+    if await state.get_state() is None:
+        # One-time compatibility path for users whose old in-memory FSM state
+        # disappeared before RedisStorage was introduced.
+        await state.set_state(UserStates.default)
+
     # Обработка AI-агентом
     incoming = IncomingMessage(
         session_id=session_id or f"temp_{message.from_user.id}",
@@ -448,6 +456,8 @@ async def handle_user_default(
     )
     full_text = ""
     buttons = []
+    handoff_processed = False
+    handoff_failed = False
 
     try:
         async with ChatActionSender.typing(
@@ -491,6 +501,14 @@ async def handle_user_default(
                             ]
                             logger.info(f"Получено кнопок: {len(buttons)}")
 
+                        elif etype == "handoff" and not handoff_processed:
+                            handoff_processed = True
+                            handoff_failed = not await _handle_handoff_event(
+                                message,
+                                state,
+                                event,
+                            )
+
                         elif etype == "end":
                             logger.info("Поток завершён, отправляем финальное сообщение")
                             break
@@ -506,6 +524,11 @@ async def handle_user_default(
                 reply_markup = keyboard
 
             final_text = full_text.strip() or "Агент вернул пустой ответ."
+            if handoff_failed:
+                final_text = (
+                    "Не удалось передать запрос сотруднику. "
+                    "Попробуйте ещё раз или используйте команду /help."
+                )
             await response_stream.finalize(
                 final_text,
                 reply_markup=reply_markup,
@@ -528,7 +551,7 @@ async def handle_user_default(
 # ==================== ОБРАБОТЧИКИ CALLBACK ====================
 
 @router.callback_query(F.data.startswith("take_ticket_"))
-async def handle_take_ticket(callback: CallbackQuery, state: FSMContext):
+async def handle_take_ticket(callback: CallbackQuery):
     """Обработчик принятия запроса менеджером"""
     esc_service = get_esc_service()
     if esc_service is None:
@@ -538,36 +561,9 @@ async def handle_take_ticket(callback: CallbackQuery, state: FSMContext):
     user_id = int(callback.data.split("_")[2])
     logger.info(f"Менеджер {callback.from_user.id} принимает запрос от пользователя {user_id}")
     
-    success = await esc_service.take_ticket(callback, user_id)
-    
-    if success:
-        # Переключаем пользователя в режим с менеджером
-        await state.set_state(UserStates.with_manager)
-        logger.info(f"User {user_id} switched to with_manager state by manager")
-        
-        # Отправляем уведомление в тред
-        escalation = esc_service.active_escalations.get(user_id)
-        if escalation and escalation.get("thread_id"):
-            try:
-                safe_name = escape_markdown(escalation['user_full_name'])
-                await callback.bot.send_message(
-                    chat_id=esc_service.manager_group_id,
-                    message_thread_id=escalation["thread_id"],
-                    text=(
-                        f"Начинаем общение с пользователем {safe_name}.\n\n"
-                        f"Инструкция:\n"
-                        f"- Все сообщения в этом треде будут пересылаться пользователю.\n"
-                        f"- Для завершения диалога используйте /close_ticket\n"
-                        f"- Для просмотра всех запросов используйте /tickets_status"
-                    )
-                )
-                logger.info(f"Отправлено приветствие в тред {escalation['thread_id']}")
-            except Exception as e:
-                logger.error(f"Ошибка при отправке приветствия в тред: {e}")
-        
-        await callback.answer("Запрос принят, тред создан")
-    else:
-        await callback.answer("Не удалось принять запрос")
+    # The user's FSM was already switched when the ticket was created. The
+    # callback FSM belongs to the manager and must not be modified here.
+    await esc_service.take_ticket(callback, user_id)
 
 
 @router.callback_query(F.data.startswith("reject_ticket_"))
@@ -616,6 +612,8 @@ async def handle_callback_query(
         chat_id=chat_id,
         message_thread_id=callback.message.message_thread_id,
     )
+    handoff_processed = False
+    handoff_failed = False
 
     try:
         runtime_settings = await _get_runtime_settings()
@@ -673,6 +671,16 @@ async def handle_callback_query(
                             ]
                             logger.info(f"Получено кнопок: {len(buttons)}")
 
+                        elif etype == "handoff" and not handoff_processed:
+                            handoff_processed = True
+                            handoff_failed = not await _handle_handoff_event(
+                                callback.message,
+                                state,
+                                event,
+                                user=callback.from_user,
+                                user_text=callback_data,
+                            )
+
                         elif etype == "end":
                             logger.info("Поток завершён, отправляем финальное сообщение")
                             break
@@ -688,6 +696,11 @@ async def handle_callback_query(
                     reply_markup = keyboard
 
                 final_text = full_text.strip() or "Действие выполнено."
+                if handoff_failed:
+                    final_text = (
+                        "Не удалось передать запрос сотруднику. "
+                        "Попробуйте ещё раз или используйте команду /help."
+                    )
                 await response_stream.finalize(
                     final_text,
                     reply_markup=reply_markup,

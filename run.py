@@ -10,6 +10,7 @@ import sys
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.fsm.storage.redis import DefaultKeyBuilder, RedisEventIsolation, RedisStorage
 from aiogram.types import WebhookInfo
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
@@ -41,6 +42,29 @@ runtime: AppRuntime | None = None
 bot_instance: Bot | None = None
 settings_provider: LiveTelegramSettingsProvider | None = None
 
+FSM_TTL_SECONDS = 60 * 60 * 24 * 30
+
+
+def build_fsm_storage(redis_url: str | None = None) -> RedisStorage:
+    """Build the mandatory persistent aiogram FSM storage."""
+    return RedisStorage.from_url(
+        redis_url or os.getenv("REDIS_URL", "redis://redis:6379/0"),
+        key_builder=DefaultKeyBuilder(prefix="agent-smith:fsm"),
+        state_ttl=FSM_TTL_SECONDS,
+        data_ttl=FSM_TTL_SECONDS,
+    )
+
+
+def build_dispatcher(redis_url: str | None = None) -> Dispatcher:
+    storage = build_fsm_storage(redis_url)
+    return Dispatcher(
+        storage=storage,
+        events_isolation=RedisEventIsolation(
+            storage.redis,
+            key_builder=DefaultKeyBuilder(prefix="agent-smith:fsm"),
+        ),
+    )
+
 
 def _env_bool(name: str, *, default: bool = False) -> bool:
     value = os.getenv(name)
@@ -68,10 +92,15 @@ async def on_startup(dispatcher: Dispatcher) -> None:
     # Инициализация Redis
     try:
         redis_client = await get_redis_client()
-        if redis_client:
-            logger.info("Redis connected")
+        if redis_client is None or not await redis_client.ping():
+            raise RuntimeError("Redis is required for persistent bot state")
+        if not isinstance(dispatcher.storage, RedisStorage):
+            raise RuntimeError("aiogram FSM must use RedisStorage")
+        await dispatcher.storage.redis.ping()
+        logger.info("Redis connected; persistent FSM storage verified")
     except Exception as e:
         logger.error(f"Redis initialization failed: {e}")
+        raise
 
     if runtime is None or settings_provider is None:
         raise RuntimeError("bot runtime was not initialized before dispatcher startup")
@@ -109,7 +138,12 @@ async def on_startup(dispatcher: Dispatcher) -> None:
     # Инициализация сервиса эскалации
     if current_settings.enable_escalation and current_settings.manager_group_id:
         try:
-            esc_service = EscalationService(bot, current_settings.manager_group_id)
+            esc_service = EscalationService(
+                bot,
+                current_settings.manager_group_id,
+                redis=redis_client,
+            )
+            await esc_service.initialize()
             set_esc_service(esc_service)
             
             # Проверяем, что сервис действительно установлен
@@ -127,6 +161,7 @@ async def on_startup(dispatcher: Dispatcher) -> None:
             )
         except Exception as e:
             logger.error(f"Failed to initialize escalation service: {e}", exc_info=True)
+            raise
     else:
         logger.warning("Management group is not configured; escalation service disabled.")
     
@@ -177,6 +212,12 @@ async def on_shutdown(dispatcher: Dispatcher) -> None:
             logger.error(f"Error closing runtime: {e}")
     
     # Закрываем Redis
+    try:
+        await dispatcher.storage.close()
+        logger.info("FSM storage connection closed")
+    except Exception as e:
+        logger.error(f"Error closing FSM storage: {e}")
+
     if redis_client is not None:
         try:
             await redis_client.close()
@@ -240,8 +281,8 @@ def main() -> None:
             default=DefaultBotProperties(parse_mode=ParseMode.HTML)
         )
         
-        # Создаем диспетчер
-        dp = Dispatcher()
+        # FSM is operational state, so it must survive container replacements.
+        dp = build_dispatcher()
         
         # Сохраняем бота в workflow_data
         dp.workflow_data['bot'] = bot_instance
