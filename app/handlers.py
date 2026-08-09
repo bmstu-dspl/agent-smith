@@ -9,6 +9,7 @@ from aiogram import F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.utils.chat_action import ChatActionSender
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -445,65 +446,69 @@ async def handle_user_default(
         bot=message.bot,
         chat_id=message.chat.id,
     )
-    await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
-
     full_text = ""
     buttons = []
 
     try:
-        runtime_settings = await _get_runtime_settings()
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            async with client.stream(
-                "POST",
-                runtime_settings.ai_agent_url.rstrip("/") + "/agent/process",
-                json=incoming.model_dump(mode="json")
-            ) as response:
-                response.raise_for_status()
+        async with ChatActionSender.typing(
+            chat_id=message.chat.id,
+            bot=message.bot,
+            message_thread_id=message.message_thread_id,
+            interval=4.0,
+        ):
+            runtime_settings = await _get_runtime_settings()
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                async with client.stream(
+                    "POST",
+                    runtime_settings.ai_agent_url.rstrip("/") + "/agent/process",
+                    json=incoming.model_dump(mode="json")
+                ) as response:
+                    response.raise_for_status()
 
-                async for line in response.aiter_lines():
-                    if not line.strip():
-                        continue
+                    async for line in response.aiter_lines():
+                        if not line.strip():
+                            continue
 
-                    try:
-                        event = json.loads(line)
-                    except json.JSONDecodeError:
-                        logger.error(f"Невалидный JSON в строке: {line}")
-                        continue
+                        try:
+                            event = json.loads(line)
+                        except json.JSONDecodeError:
+                            logger.error(f"Невалидный JSON в строке: {line}")
+                            continue
 
-                    etype = event.get("type")
+                        etype = event.get("type")
 
-                    if etype == "text_chunk":
-                        chunk = event.get("content", "")
-                        full_text += chunk
-                        await response_stream.update(full_text)
+                        if etype == "text_chunk":
+                            chunk = event.get("content", "")
+                            full_text += chunk
+                            await response_stream.update(full_text)
 
-                    elif etype == "buttons":
-                        raw_buttons = event.get("buttons", [])
-                        buttons = [
-                            {"text": b["text"], "callback_data": b["callback_data"]}
-                            for b in raw_buttons
-                        ]
-                        logger.info(f"Получено кнопок: {len(buttons)}")
+                        elif etype == "buttons":
+                            raw_buttons = event.get("buttons", [])
+                            buttons = [
+                                {"text": b["text"], "callback_data": b["callback_data"]}
+                                for b in raw_buttons
+                            ]
+                            logger.info(f"Получено кнопок: {len(buttons)}")
 
-                    elif etype == "end":
-                        logger.info("Поток завершён, отправляем финальное сообщение")
-                        break
+                        elif etype == "end":
+                            logger.info("Поток завершён, отправляем финальное сообщение")
+                            break
 
-        reply_markup = None
-        if buttons:
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text=btn["text"], callback_data=btn["callback_data"])]
-                    for btn in buttons
-                ]
+            reply_markup = None
+            if buttons:
+                keyboard = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(text=btn["text"], callback_data=btn["callback_data"])]
+                        for btn in buttons
+                    ]
+                )
+                reply_markup = keyboard
+
+            final_text = full_text.strip() or "Агент вернул пустой ответ."
+            await response_stream.finalize(
+                final_text,
+                reply_markup=reply_markup,
             )
-            reply_markup = keyboard
-
-        final_text = full_text.strip() or "Агент вернул пустой ответ."
-        await response_stream.finalize(
-            final_text,
-            reply_markup=reply_markup,
-        )
 
     except httpx.HTTPStatusError as e:
         logger.error(f"Ошибка HTTP {e.response.status_code}")
@@ -629,65 +634,64 @@ async def handle_callback_query(
 
             full_text = ""
             buttons = []
-            first_chunk_received = False
 
-            await callback.bot.send_chat_action(chat_id=chat_id, action="typing")
+            async with ChatActionSender.typing(
+                chat_id=chat_id,
+                bot=callback.bot,
+                message_thread_id=callback.message.message_thread_id,
+                interval=4.0,
+            ):
+                async with client.stream(
+                    "POST",
+                    runtime_settings.ai_agent_url.rstrip("/") + "/agent/process",
+                    json=payload
+                ) as response:
+                    response.raise_for_status()
 
-            async with client.stream(
-                "POST",
-                runtime_settings.ai_agent_url.rstrip("/") + "/agent/process",
-                json=payload
-            ) as response:
-                response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        if not line.strip():
+                            continue
 
-                async for line in response.aiter_lines():
-                    if not line.strip():
-                        continue
+                        try:
+                            event = json.loads(line)
+                        except json.JSONDecodeError:
+                            logger.error(f"Невалидный JSON в строке: {line}")
+                            continue
 
-                    try:
-                        event = json.loads(line)
-                    except json.JSONDecodeError:
-                        logger.error(f"Невалидный JSON в строке: {line}")
-                        continue
+                        etype = event.get("type")
 
-                    etype = event.get("type")
+                        if etype == "text_chunk":
+                            chunk = event.get("content", "")
+                            full_text += chunk
+                            await response_stream.update(full_text)
 
-                    if etype == "text_chunk":
-                        chunk = event.get("content", "")
-                        full_text += chunk
-                        first_chunk_received = True
-                        await response_stream.update(full_text)
+                        elif etype == "buttons":
+                            raw_buttons = event.get("buttons", [])
+                            buttons = [
+                                {"text": b["text"], "callback_data": b["callback_data"]}
+                                for b in raw_buttons
+                            ]
+                            logger.info(f"Получено кнопок: {len(buttons)}")
 
-                    elif etype == "buttons":
-                        raw_buttons = event.get("buttons", [])
-                        buttons = [
-                            {"text": b["text"], "callback_data": b["callback_data"]}
-                            for b in raw_buttons
+                        elif etype == "end":
+                            logger.info("Поток завершён, отправляем финальное сообщение")
+                            break
+
+                reply_markup = None
+                if buttons:
+                    keyboard = InlineKeyboardMarkup(
+                        inline_keyboard=[
+                            [InlineKeyboardButton(text=btn["text"], callback_data=btn["callback_data"])]
+                            for btn in buttons
                         ]
-                        logger.info(f"Получено кнопок: {len(buttons)}")
+                    )
+                    reply_markup = keyboard
 
-                    elif etype == "end":
-                        logger.info("Поток завершён, отправляем финальное сообщение")
-                        break
-
-                    if not first_chunk_received:
-                        await callback.bot.send_chat_action(chat_id=chat_id, action="typing")
-
-        reply_markup = None
-        if buttons:
-            keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [InlineKeyboardButton(text=btn["text"], callback_data=btn["callback_data"])]
-                    for btn in buttons
-                ]
-            )
-            reply_markup = keyboard
-
-        final_text = full_text.strip() or "Действие выполнено."
-        await response_stream.finalize(
-            final_text,
-            reply_markup=reply_markup,
-        )
+                final_text = full_text.strip() or "Действие выполнено."
+                await response_stream.finalize(
+                    final_text,
+                    reply_markup=reply_markup,
+                )
 
     except httpx.TimeoutException:
         logger.error("Таймаут при обработке callback")

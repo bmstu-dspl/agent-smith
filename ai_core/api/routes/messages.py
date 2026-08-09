@@ -40,6 +40,10 @@ def _safe_callback_value(value: object) -> str:
     return safe or "option"
 
 
+def _normalized_visible_text(value: str) -> str:
+    return " ".join(value.split())
+
+
 def _build_ask_user_buttons(args: dict) -> tuple[list[Button], dict[str, str], str]:
     question = str(args.get("question") or "").strip()
     options = args.get("options") or []
@@ -147,7 +151,12 @@ async def _stream_agent_response(
                 ButtonsMessage(session_id=payload.session_id, buttons=buttons)
             )
 
-        if question:
+        # ask_user is authoritative for the visible question. Some models also
+        # emit the same sentence immediately before the tool call; do not add a
+        # second copy when that text is already present in the response stream.
+        visible_text = _normalized_visible_text("".join(accumulated_chunks))
+        normalized_question = _normalized_visible_text(question)
+        if normalized_question and not visible_text.endswith(normalized_question):
             pending_text_chunks.append(question)
 
     async def flush_pending_events() -> AsyncIterator[str]:

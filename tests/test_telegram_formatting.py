@@ -6,6 +6,8 @@ from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 
 from app.telegram_formatting import (
     AgentResponseStream,
+    markdown_to_rich_message,
+    markdown_to_stream_text,
     markdown_to_telegram_html,
     send_agent_response,
 )
@@ -38,7 +40,7 @@ def test_markdown_to_telegram_html_escapes_untrusted_text_and_unsafe_links() -> 
 
 
 @pytest.mark.asyncio
-async def test_agent_response_stream_uses_native_rich_draft_and_removes_placeholder() -> None:
+async def test_agent_response_stream_edits_plain_placeholder_without_rich_media() -> None:
     placeholder = AsyncMock()
     placeholder.message_id = 73
     bot = AsyncMock()
@@ -49,18 +51,21 @@ async def test_agent_response_stream_uses_native_rich_draft_and_removes_placehol
         min_update_interval_seconds=0,
     )
 
-    await stream.update("**Номер**")
+    await stream.update(
+        "На период есть номера:\n\n"
+        "<tg-slideshow>\n\n![](https://hotel.example/room.jpg)"
+    )
 
-    call = bot.send_rich_message_draft.await_args
-    assert call.kwargs["chat_id"] == 42
-    assert call.kwargs["draft_id"] == 73
-    assert call.kwargs["rich_message"].markdown == "**Номер**"
-    placeholder.delete.assert_awaited_once_with()
-    placeholder.edit_text.assert_not_awaited()
+    placeholder.edit_text.assert_awaited_once_with(
+        "На период есть номера:▌",
+        parse_mode=None,
+    )
+    bot.send_rich_message_draft.assert_not_awaited()
+    placeholder.delete.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_agent_response_stream_persists_completed_rich_draft() -> None:
+async def test_agent_response_stream_promotes_placeholder_to_rich_message_with_typed_media() -> None:
     placeholder = AsyncMock()
     placeholder.message_id = 73
     bot = AsyncMock()
@@ -72,25 +77,44 @@ async def test_agent_response_stream_persists_completed_rich_draft() -> None:
     )
     reply_markup = object()
 
-    await stream.update("**Но")
-    await stream.finalize("**Номер**", reply_markup=reply_markup)
+    markdown = (
+        "<tg-slideshow>\n\n"
+        "![](https://hotel.example/room-1.jpg)\n"
+        "![](https://hotel.example/room-2.jpg)\n\n"
+        "</tg-slideshow>\n\n"
+        "**Номер**"
+    )
+    await stream.update(markdown)
+    await stream.finalize(markdown, reply_markup=reply_markup)
 
-    call = bot.send_rich_message.await_args
-    assert call.kwargs["chat_id"] == 42
-    assert call.kwargs["rich_message"].markdown == "**Номер**"
-    assert call.kwargs["reply_markup"] is reply_markup
-    placeholder.delete.assert_awaited_once_with()
+    final = placeholder.edit_text.await_args_list[-1]
+    rich_message = final.kwargs["rich_message"]
+    assert rich_message.markdown == (
+        "<tg-slideshow>\n\n"
+        "![](tg://photo?id=photo_1)\n"
+        "![](tg://photo?id=photo_2)\n\n"
+        "</tg-slideshow>\n\n"
+        "**Номер**"
+    )
+    assert [item.id for item in rich_message.media] == ["photo_1", "photo_2"]
+    assert [item.media.media for item in rich_message.media] == [
+        "https://hotel.example/room-1.jpg",
+        "https://hotel.example/room-2.jpg",
+    ]
+    assert final.kwargs["reply_markup"] is reply_markup
+    bot.send_rich_message.assert_not_awaited()
+    placeholder.delete.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_completed_draft_falls_back_to_regular_html_message() -> None:
+async def test_rich_final_falls_back_to_clean_html_without_media_markup() -> None:
     placeholder = AsyncMock()
     placeholder.message_id = 73
     bot = AsyncMock()
-    bot.send_rich_message.side_effect = TelegramBadRequest(
-        method=AsyncMock(),
-        message="rich final unsupported",
-    )
+    placeholder.edit_text.side_effect = [
+        TelegramBadRequest(method=AsyncMock(), message="rich final unsupported"),
+        None,
+    ]
     stream = AgentResponseStream(
         placeholder,
         bot=bot,
@@ -98,26 +122,21 @@ async def test_completed_draft_falls_back_to_regular_html_message() -> None:
         min_update_interval_seconds=0,
     )
 
-    await stream.update("**Но")
-    await stream.finalize("**Номер** — *10 000 ₽*")
-
-    bot.send_message.assert_awaited_once_with(
-        chat_id=42,
-        text="<b>Номер</b> — <i>10 000 ₽</i>",
-        parse_mode="HTML",
-        reply_markup=None,
+    await stream.finalize(
+        "<tg-slideshow>\n![](https://hotel.example/room.jpg)\n</tg-slideshow>\n"
+        "**Номер** — *10 000 ₽*"
     )
+
+    fallback = placeholder.edit_text.await_args_list[1]
+    assert fallback.args == ("<b>Номер</b> — <i>10 000 ₽</i>",)
+    assert fallback.kwargs == {"parse_mode": "HTML", "reply_markup": None}
 
 
 @pytest.mark.asyncio
-async def test_agent_response_stream_falls_back_to_editing_placeholder() -> None:
+async def test_agent_response_stream_uses_plain_edits_before_rich_final() -> None:
     placeholder = AsyncMock()
     placeholder.message_id = 73
     bot = AsyncMock()
-    bot.send_rich_message_draft.side_effect = TelegramBadRequest(
-        method=AsyncMock(),
-        message="draft unsupported",
-    )
     stream = AgentResponseStream(
         placeholder,
         bot=bot,
@@ -134,7 +153,7 @@ async def test_agent_response_stream_falls_back_to_editing_placeholder() -> None
     final = placeholder.edit_text.await_args_list[1]
     assert final.kwargs["text"] is None
     assert final.kwargs["rich_message"].markdown == "**Номер**"
-    bot.send_rich_message.assert_not_awaited()
+    bot.send_rich_message_draft.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -146,10 +165,6 @@ async def test_rejected_plain_streaming_edit_does_not_abort_final_response() -> 
         None,
     ]
     bot = AsyncMock()
-    bot.send_rich_message_draft.side_effect = TelegramBadRequest(
-        method=AsyncMock(),
-        message="invalid partial rich markdown",
-    )
     stream = AgentResponseStream(
         placeholder,
         bot=bot,
@@ -164,14 +179,14 @@ async def test_rejected_plain_streaming_edit_does_not_abort_final_response() -> 
 
 
 @pytest.mark.asyncio
-async def test_temporary_draft_failure_does_not_abort_or_disable_rich_stream() -> None:
+async def test_temporary_plain_edit_failure_does_not_abort_stream() -> None:
     placeholder = AsyncMock()
     placeholder.message_id = 73
-    bot = AsyncMock()
-    bot.send_rich_message_draft.side_effect = [
+    placeholder.edit_text.side_effect = [
         TelegramRetryAfter(method=AsyncMock(), message="retry later", retry_after=1),
         None,
     ]
+    bot = AsyncMock()
     stream = AgentResponseStream(
         placeholder,
         bot=bot,
@@ -182,9 +197,29 @@ async def test_temporary_draft_failure_does_not_abort_or_disable_rich_stream() -
     await stream.update("Черновик")
     await stream.update("**Номер**")
 
-    assert bot.send_rich_message_draft.await_count == 2
-    placeholder.delete.assert_awaited_once_with()
-    placeholder.edit_text.assert_not_awaited()
+    assert placeholder.edit_text.await_count == 2
+    bot.send_rich_message_draft.assert_not_awaited()
+    placeholder.delete.assert_not_awaited()
+
+
+def test_markdown_to_rich_message_maps_http_images_to_typed_tg_media() -> None:
+    rich_message = markdown_to_rich_message(
+        "![](https://partner-static.example/image-id)\n**Номер**"
+    )
+
+    assert rich_message.markdown == "![](tg://photo?id=photo_1)\n**Номер**"
+    assert rich_message.media[0].id == "photo_1"
+    assert rich_message.media[0].media.media == (
+        "https://partner-static.example/image-id"
+    )
+
+
+def test_markdown_to_stream_text_hides_media_and_formatting() -> None:
+    assert markdown_to_stream_text(
+        "Варианты:\n<tg-slideshow>\n![](https://hotel.example/1.jpg)\n"
+        "</tg-slideshow>\n**Стандарт**\n*10 000 ₽*\n"
+        "[Забронировать](https://hotel.example/book)"
+    ) == "Варианты:\n\nСтандарт\n10 000 ₽\nЗабронировать"
 
 
 @pytest.mark.asyncio

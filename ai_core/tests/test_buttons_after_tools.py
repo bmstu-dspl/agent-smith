@@ -85,6 +85,52 @@ def test_buttons_are_streamed_after_an_mcp_tool_result() -> None:
     assert text == "Which option do you prefer?"
 
 
+class ModelTextThenAskUserGraph(McpThenAskUserGraph):
+    async def astream_response(
+        self,
+        payload,
+        on_tool_call=None,
+        on_ask_user=None,
+    ):
+        question = "How many guests will stay?"
+        yield question
+        await on_ask_user(
+            {
+                "question": question,
+                "options": [
+                    {
+                        "label": "Two",
+                        "value": "2",
+                        "user_message": "There will be two guests.",
+                    }
+                ],
+            },
+            '{"status": "waiting_user"}',
+        )
+
+
+def test_ask_user_does_not_duplicate_question_already_emitted_by_model() -> None:
+    app = FastAPI()
+    app.include_router(router)
+    app.state.graph = ModelTextThenAskUserGraph()
+    app.state.memory = FakeMemory()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/agent/process",
+            json={"session_id": "single-question", "user_message": "Find a room"},
+        )
+
+    events = [json.loads(line) for line in response.text.splitlines()]
+    text = "".join(
+        event["content"] for event in events if event["type"] == "text_chunk"
+    )
+    button_events = [event for event in events if event["type"] == "buttons"]
+
+    assert text == "How many guests will stay?"
+    assert [button["text"] for button in button_events[-1]["buttons"]] == ["Two"]
+
+
 class LoadSkillGraph:
     async def adecide_buttons(self, payload):
         return []
