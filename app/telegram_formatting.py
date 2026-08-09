@@ -56,7 +56,11 @@ _UNCLOSED_RICH_MEDIA_BLOCK = re.compile(
 )
 _RICH_MEDIA_TAG = re.compile(r"</?tg-[^>]*>?", re.IGNORECASE)
 _MARKDOWN_LINK = re.compile(r"\[([^\]\n]+)\]\(https?://[^\s)]+\)")
-_MARKDOWN_HTTP_DESTINATION = re.compile(r"(?<=\]\()https?://[^\s)]+")
+_HTTP_URL = re.compile(r"https?://[^\s<>()\[\]]+")
+_HTML_ESCAPED_AMPERSAND = re.compile(
+    r"&(?:amp|#0*38|#x0*26);",
+    re.IGNORECASE,
+)
 _MAX_DRAFT_TEXT_LENGTH = 4096
 _MAX_PHOTO_BYTES = 10 * 1024 * 1024
 _MAX_TOTAL_MEDIA_BYTES = 50 * 1024 * 1024
@@ -366,9 +370,9 @@ def markdown_to_stream_text(markdown: str) -> str:
 
 
 def normalize_markdown_http_urls(markdown: str) -> str:
-    """Decode accidental HTML entities inside Rich Markdown URL targets once."""
-    return _MARKDOWN_HTTP_DESTINATION.sub(
-        lambda match: html.unescape(match.group(0)),
+    """Decode accidental HTML ampersands in every HTTP URL once."""
+    return _HTTP_URL.sub(
+        lambda match: _HTML_ESCAPED_AMPERSAND.sub("&", match.group(0)),
         markdown,
     )
 

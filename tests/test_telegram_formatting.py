@@ -134,14 +134,23 @@ async def test_rich_media_resolver_downloads_http_images_for_multipart_upload() 
 @pytest.mark.asyncio
 async def test_rich_markdown_sends_booking_url_ampersands_without_escaping() -> None:
     resolver = RichMediaResolver(redis=FakeRedis())
-    prepared = await resolver.prepare(
-        "[Забронировать](https://hotel.example/booking?room=42&amp;rate=7)"
+    escaped_url = (
+        "https://gorodskie-hotel.ru/booking?hotel_id=60043&amp;tl-lng=ru&amp;"
+        "tl-cur=RUB&amp;tl-adults=2&amp;tl-children-age=&amp;tl-room=386276&amp;"
+        "tl-offer=898087&amp;tl-nights=1&amp;tl-date=2026-09-03&amp;"
+        "utm_source=connectivity-hub"
     )
+    url = escaped_url.replace("&amp;", "&")
 
-    assert prepared.rich_message.html is None
-    assert prepared.rich_message.markdown == (
-        "[Забронировать](https://hotel.example/booking?room=42&rate=7)"
-    )
+    for markdown, expected in (
+        (escaped_url, url),
+        (f"[{escaped_url}]({escaped_url})", f"[{url}]({url})"),
+        (f"[Забронировать]({escaped_url})", f"[Забронировать]({url})"),
+    ):
+        prepared = await resolver.prepare(markdown)
+
+        assert prepared.rich_message.html is None
+        assert prepared.rich_message.markdown == expected
 
 
 @pytest.mark.asyncio
@@ -169,6 +178,14 @@ def test_html_fallback_does_not_double_escape_booking_url_entities() -> None:
         '<a href="https://hotel.example/booking?room=42&amp;rate=7">'
         "Забронировать</a>"
     )
+
+
+def test_html_fallback_does_not_double_escape_bare_booking_url() -> None:
+    rendered = markdown_to_telegram_html(
+        "https://hotel.example/booking?room=42&amp;rate=7"
+    )
+
+    assert rendered == "https://hotel.example/booking?room=42&amp;rate=7"
 
 
 @pytest.mark.asyncio
