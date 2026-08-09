@@ -43,6 +43,11 @@ class FakeRedis:
         return value.decode() if isinstance(value, bytes) else str(value)
 
 
+class FakeFSMStorage:
+    def __init__(self) -> None:
+        self.set_state = AsyncMock()
+
+
 @pytest.mark.asyncio
 async def test_dispatcher_fsm_storage_is_redis_backed_with_ttl() -> None:
     storage = build_fsm_storage("redis://localhost:6379/15")
@@ -82,7 +87,9 @@ async def test_default_text_route_accepts_missing_legacy_fsm_state() -> None:
 @pytest.mark.asyncio
 async def test_escalation_and_thread_mapping_survive_service_restarts() -> None:
     redis = FakeRedis()
+    fsm_storage = FakeFSMStorage()
     bot = SimpleNamespace(
+        id=999,
         send_message=AsyncMock(return_value=SimpleNamespace(message_id=700)),
         create_forum_topic=AsyncMock(return_value=SimpleNamespace(message_thread_id=900)),
     )
@@ -96,7 +103,12 @@ async def test_escalation_and_thread_mapping_survive_service_restarts() -> None:
         answer=AsyncMock(),
     )
 
-    first = EscalationService(bot, -100123, redis=redis)
+    service_kwargs = {
+        "redis": redis,
+        "fsm_storage": fsm_storage,
+        "default_user_state": UserStates.default.state,
+    }
+    first = EscalationService(bot, -100123, **service_kwargs)
     await first.initialize()
     assert await first.escalate_to_managers(
         message,
@@ -105,28 +117,94 @@ async def test_escalation_and_thread_mapping_survive_service_restarts() -> None:
         notify_user=False,
     )
 
-    second = EscalationService(bot, -100123, redis=redis)
+    second = EscalationService(bot, -100123, **service_kwargs)
     await second.initialize()
     assert second.active_escalations[42]["status"] == "pending"
 
     callback = SimpleNamespace(
-        from_user=SimpleNamespace(id=7, full_name="Manager"),
+        from_user=SimpleNamespace(id=7, first_name="Иван", full_name="Иван Менеджеров"),
         message=SimpleNamespace(text="Ticket", edit_text=AsyncMock()),
         answer=AsyncMock(),
     )
     assert await second.take_ticket(callback, 42)
+    thread_intro = bot.send_message.await_args_list[1].kwargs
+    assert thread_intro["parse_mode"] == "HTML"
+    assert "<b>История диалога</b>" in thread_intro["text"]
+    assert "Гость: Нужен оператор" in thread_intro["text"]
+    user_notification = bot.send_message.await_args_list[2].kwargs["text"]
+    assert "Менеджер Иван принял" in user_notification
+    assert "Менеджеров" not in user_notification
 
-    third = EscalationService(bot, -100123, redis=redis)
+    third = EscalationService(bot, -100123, **service_kwargs)
     await third.initialize()
     assert third.active_escalations[42]["status"] == "active"
     assert third.user_threads == {42: 900}
     assert third.thread_users == {900: 42}
 
     assert await third.close_escalation(42)
-    fourth = EscalationService(bot, -100123, redis=redis)
+    fsm_storage.set_state.assert_awaited_once()
+    reset_key, reset_state = fsm_storage.set_state.await_args.args
+    assert reset_key.bot_id == 999
+    assert reset_key.chat_id == 42
+    assert reset_key.user_id == 42
+    assert reset_state == UserStates.default.state
+
+    fourth = EscalationService(bot, -100123, **service_kwargs)
     await fourth.initialize()
     assert fourth.active_escalations == {}
     assert fourth.thread_users == {}
+
+
+@pytest.mark.asyncio
+async def test_forwarded_operator_messages_use_quotes_and_first_name() -> None:
+    redis = FakeRedis()
+    bot = SimpleNamespace(
+        id=999,
+        me=AsyncMock(return_value=SimpleNamespace(id=999)),
+        send_message=AsyncMock(return_value=SimpleNamespace(message_id=700)),
+    )
+    service = EscalationService(
+        bot,
+        -100123,
+        redis=redis,
+        fsm_storage=FakeFSMStorage(),
+        default_user_state=UserStates.default.state,
+    )
+    service.active_escalations[42] = {
+        "user_id": 42,
+        "user_chat_id": 42,
+        "user_full_name": "Тестовый Гость",
+        "status": "active",
+        "thread_id": 900,
+        "manager_display_name": "Иван",
+    }
+    service.user_threads[42] = 900
+    service.thread_users[900] = 42
+
+    manager_message = SimpleNamespace(
+        message_thread_id=900,
+        from_user=SimpleNamespace(id=7, first_name="Иван", full_name="Иван Менеджеров"),
+        text="Фен уже несём <скоро>",
+        caption=None,
+        reply=AsyncMock(),
+    )
+    assert await service.forward_message_to_user(manager_message)
+    to_user = bot.send_message.await_args.kwargs
+    assert to_user["parse_mode"] == "HTML"
+    assert "менеджера Иван" in to_user["text"]
+    assert "Менеджеров" not in to_user["text"]
+    assert "<blockquote>Фен уже несём &lt;скоро&gt;</blockquote>" in to_user["text"]
+
+    user_message = SimpleNamespace(
+        from_user=SimpleNamespace(id=42),
+        text="Спасибо <вам>",
+        caption=None,
+    )
+    assert await service.forward_message_to_manager(user_message)
+    to_manager = bot.send_message.await_args.kwargs
+    assert to_manager["parse_mode"] == "HTML"
+    assert "<b>Сообщение гостя</b>" in to_manager["text"]
+    assert "<blockquote>Спасибо &lt;вам&gt;</blockquote>" in to_manager["text"]
 
 
 @pytest.mark.asyncio

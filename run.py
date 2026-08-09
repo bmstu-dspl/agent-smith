@@ -21,7 +21,8 @@ from sqlalchemy.orm import sessionmaker
 sys.path.append(str(Path(__file__).parent))
 
 from app.escalation_service import EscalationService
-from app.handlers import get_esc_service, router, set_esc_service, set_settings_provider
+from app.bot_commands import register_bot_commands
+from app.handlers import UserStates, get_esc_service, router, set_esc_service, set_settings_provider
 from app.live_config import LiveTelegramSettingsProvider
 from app.middleware.session_middleware import SessionMiddleware
 from app_runtime import AppRuntime
@@ -142,6 +143,8 @@ async def on_startup(dispatcher: Dispatcher) -> None:
                 bot,
                 current_settings.manager_group_id,
                 redis=redis_client,
+                fsm_storage=dispatcher.storage,
+                default_user_state=UserStates.default.state,
             )
             await esc_service.initialize()
             set_esc_service(esc_service)
@@ -164,6 +167,8 @@ async def on_startup(dispatcher: Dispatcher) -> None:
             raise
     else:
         logger.warning("Management group is not configured; escalation service disabled.")
+
+    await register_bot_commands(bot, router, current_settings.manager_group_id)
     
     # Настройка вебхука
     try:

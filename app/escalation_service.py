@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
 from datetime import timezone
 from typing import Any
 
 from aiogram import Bot
+from aiogram.fsm.storage.base import StorageKey
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, User
 
 
@@ -18,10 +20,20 @@ class EscalationService:
 
     USER_KEY_PREFIX = "agent-smith:escalation:v1:user:"
 
-    def __init__(self, bot: Bot, manager_group_id: int | None, *, redis: Any) -> None:
+    def __init__(
+        self,
+        bot: Bot,
+        manager_group_id: int | None,
+        *,
+        redis: Any,
+        fsm_storage: Any,
+        default_user_state: str,
+    ) -> None:
         self.bot = bot
         self.manager_group_id = manager_group_id
         self.redis = redis
+        self.fsm_storage = fsm_storage
+        self.default_user_state = default_user_state
         self.active_escalations: dict[int, dict[str, Any]] = {}
         self.user_threads: dict[int, int] = {}
         self.thread_users: dict[int, int] = {}
@@ -138,6 +150,7 @@ class EscalationService:
                     "user_username": username,
                     "reason": reason,
                     "summary": summary,
+                    "history": self._sanitize_history(history or []),
                     "timestamp": user_message.date.astimezone(timezone.utc).isoformat(),
                     "group_message_id": group_message.message_id,
                     "group_chat_id": self.manager_group_id,
@@ -174,6 +187,7 @@ class EscalationService:
                 return False
 
             manager_name = callback.from_user.full_name
+            manager_display_name = self._first_name(callback.from_user)
             manager_id = callback.from_user.id
             thread_name = f"Пользователь {escalation['user_full_name']} ({user_id})"
             try:
@@ -182,20 +196,15 @@ class EscalationService:
                 await self.bot.send_message(
                     chat_id=self.manager_group_id,
                     message_thread_id=thread_id,
-                    parse_mode=None,
-                    text=(
-                        f"Пользователь: {escalation['user_full_name']}\n"
-                        f"ID: {user_id}\n"
-                        f"Username: @{escalation['user_username']}\n\n"
-                        "Все сообщения в этом треде пересылаются пользователю.\n"
-                        "Для завершения диалога используйте /close_ticket"
-                    ),
+                    parse_mode="HTML",
+                    text=self._format_thread_intro(escalation),
                 )
 
                 escalation.update(
                     status="active",
                     manager_id=manager_id,
                     manager_name=manager_name,
+                    manager_display_name=manager_display_name,
                     thread_id=thread_id,
                     thread_name=thread_name,
                 )
@@ -217,7 +226,10 @@ class EscalationService:
                 try:
                     await self.bot.send_message(
                         chat_id=escalation["user_chat_id"],
-                        text=f"Менеджер {manager_name} принял ваш запрос и подключился к диалогу.",
+                        text=(
+                            f"Менеджер {manager_display_name} принял ваш запрос "
+                            "и подключился к диалогу."
+                        ),
                         parse_mode=None,
                     )
                 except Exception:
@@ -280,10 +292,17 @@ class EscalationService:
             return False
 
         try:
+            manager_display_name = escalation.get("manager_display_name") or self._first_name(
+                manager_message.from_user
+            )
+            message_text = manager_message.text or manager_message.caption or ""
             await self.bot.send_message(
                 chat_id=escalation["user_chat_id"],
-                text=f"Менеджер {manager_message.from_user.full_name}:\n{manager_message.text or ''}",
-                parse_mode=None,
+                text=(
+                    f"<b>Сообщение от менеджера {html.escape(manager_display_name)}</b>\n"
+                    f"<blockquote>{html.escape(message_text)}</blockquote>"
+                ),
+                parse_mode="HTML",
             )
             return True
         except Exception:
@@ -301,11 +320,16 @@ class EscalationService:
             await user_message.answer("Менеджер еще не создал тред. Подождите принятия запроса.")
             return False
         try:
+            message_text = user_message.text or user_message.caption or ""
             await self.bot.send_message(
                 chat_id=self.manager_group_id,
                 message_thread_id=thread_id,
-                text=f"{escalation['user_full_name']}:\n{user_message.text or ''}",
-                parse_mode=None,
+                text=(
+                    f"<b>Сообщение гостя</b> · {html.escape(escalation['user_full_name'])} "
+                    f"(<code>{user_id}</code>)\n"
+                    f"<blockquote>{html.escape(message_text)}</blockquote>"
+                ),
+                parse_mode="HTML",
             )
             return True
         except Exception:
@@ -333,6 +357,10 @@ class EscalationService:
         if thread_id:
             self.thread_users.pop(int(thread_id), None)
         await self.redis.delete(self._user_key(user_id))
+        try:
+            await self._reset_user_fsm(escalation)
+        except Exception:
+            logger.exception("Failed to reset FSM after closing escalation for user %s", user_id)
         logger.info("Escalation closed: user=%s reason=%s", user_id, reason)
         return True
 
@@ -362,6 +390,17 @@ class EscalationService:
             json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
         )
 
+    async def _reset_user_fsm(self, escalation: dict[str, Any]) -> None:
+        user_id = int(escalation["user_id"])
+        await self.fsm_storage.set_state(
+            StorageKey(
+                bot_id=self.bot.id,
+                chat_id=int(escalation["user_chat_id"]),
+                user_id=user_id,
+            ),
+            self.default_user_state,
+        )
+
     def _user_key(self, user_id: int) -> str:
         return f"{self.USER_KEY_PREFIX}{user_id}"
 
@@ -372,6 +411,64 @@ class EscalationService:
     @staticmethod
     def _truncate(value: str, limit: int = 3900) -> str:
         return value if len(value) <= limit else value[: limit - 1] + "…"
+
+    @staticmethod
+    def _first_name(user: User | Any) -> str:
+        first_name = str(getattr(user, "first_name", "") or "").strip()
+        if first_name:
+            return first_name
+        full_name = str(getattr(user, "full_name", "") or "Менеджер").strip()
+        return full_name.split(maxsplit=1)[0]
+
+    @staticmethod
+    def _sanitize_history(history: list[dict[str, Any]]) -> list[dict[str, str]]:
+        sanitized: list[dict[str, str]] = []
+        for item in history[-20:]:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "message")[:32]
+            content = str(item.get("content") or "").strip()[:1500]
+            if content:
+                sanitized.append({"role": role, "content": content})
+        return sanitized
+
+    @classmethod
+    def _format_thread_intro(cls, escalation: dict[str, Any]) -> str:
+        summary = str(escalation.get("summary") or "").strip()
+        history = escalation.get("history") or []
+        labels = {"user": "Гость", "assistant": "Бот"}
+        history_lines = []
+        for item in history:
+            label = labels.get(str(item.get("role")), str(item.get("role") or "Сообщение"))
+            content = " ".join(str(item.get("content") or "").split())
+            if content:
+                history_lines.append(f"{label}: {content}")
+
+        parts = [
+            "<b>Обращение гостя</b>",
+            f"Пользователь: {html.escape(str(escalation['user_full_name']))}",
+            f"ID: <code>{int(escalation['user_id'])}</code>",
+            f"Username: @{html.escape(str(escalation['user_username']))}",
+        ]
+        if summary:
+            parts.extend(["", "<b>Краткое резюме</b>", html.escape(summary[:1000])])
+        if history_lines:
+            history_text = "\n".join(history_lines)
+            parts.extend(
+                [
+                    "",
+                    "<b>История диалога</b>",
+                    f"<blockquote>{html.escape(history_text[:2600])}</blockquote>",
+                ]
+            )
+        parts.extend(
+            [
+                "",
+                "Все сообщения в этом треде пересылаются гостю.",
+                "Для завершения диалога используйте /close_ticket.",
+            ]
+        )
+        return "\n".join(parts)
 
     @staticmethod
     def _format_context(*, summary: str, history: list[dict[str, Any]]) -> str:

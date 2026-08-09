@@ -131,6 +131,29 @@ async def test_rich_media_resolver_downloads_http_images_for_multipart_upload() 
 
 
 @pytest.mark.asyncio
+async def test_rich_message_decodes_html_entities_inside_booking_url() -> None:
+    resolver = RichMediaResolver(redis=FakeRedis())
+    prepared = await resolver.prepare(
+        "[Забронировать](https://hotel.example/booking?room=42&amp;rate=7)"
+    )
+
+    assert prepared.rich_message.markdown == (
+        "[Забронировать](https://hotel.example/booking?room=42&rate=7)"
+    )
+
+
+def test_html_fallback_does_not_double_escape_booking_url_entities() -> None:
+    rendered = markdown_to_telegram_html(
+        "[Забронировать](https://hotel.example/booking?room=42&amp;rate=7)"
+    )
+
+    assert rendered == (
+        '<a href="https://hotel.example/booking?room=42&amp;rate=7">'
+        "Забронировать</a>"
+    )
+
+
+@pytest.mark.asyncio
 async def test_rich_media_resolver_reuses_and_records_telegram_file_ids() -> None:
     redis = FakeRedis()
     http = FakeHttpClient()

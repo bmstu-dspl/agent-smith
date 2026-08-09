@@ -56,6 +56,7 @@ _UNCLOSED_RICH_MEDIA_BLOCK = re.compile(
 )
 _RICH_MEDIA_TAG = re.compile(r"</?tg-[^>]*>?", re.IGNORECASE)
 _MARKDOWN_LINK = re.compile(r"\[([^\]\n]+)\]\(https?://[^\s)]+\)")
+_MARKDOWN_HTTP_DESTINATION = re.compile(r"(?<=\]\()https?://[^\s)]+")
 
 _MAX_DRAFT_TEXT_LENGTH = 4096
 _MAX_PHOTO_BYTES = 10 * 1024 * 1024
@@ -96,6 +97,7 @@ class RichMediaResolver:
         return f"{_MEDIA_CACHE_PREFIX}{digest}"
 
     async def prepare(self, markdown: str) -> PreparedRichMessage:
+        markdown = normalize_markdown_http_urls(markdown)
         matches = list(_MARKDOWN_IMAGE.finditer(markdown))
         if not matches:
             return PreparedRichMessage(
@@ -364,9 +366,17 @@ def markdown_to_stream_text(markdown: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
+def normalize_markdown_http_urls(markdown: str) -> str:
+    """Decode accidental HTML entities inside Rich Markdown URL targets once."""
+    return _MARKDOWN_HTTP_DESTINATION.sub(
+        lambda match: html.unescape(match.group(0)),
+        markdown,
+    )
+
+
 def markdown_to_telegram_html(markdown: str) -> str:
     """Convert the supported agent Markdown subset to safe Telegram HTML."""
-    markdown = _without_rich_media(markdown).strip()
+    markdown = normalize_markdown_http_urls(_without_rich_media(markdown)).strip()
     rendered: list[str] = []
     cursor = 0
 

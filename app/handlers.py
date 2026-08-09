@@ -114,7 +114,16 @@ async def cmd_start(
     )
 
 
-@router.message(Command("new"))
+@router.message(
+    Command("new"),
+    flags={
+        "bot_command": {
+            "command": "new",
+            "description": "Начать новый диалог",
+            "scope": "private",
+        }
+    },
+)
 async def cmd_new(
     message: Message,
     state: FSMContext,
@@ -230,9 +239,21 @@ async def cmd_my_status(message: Message, state: FSMContext):
 
 # ==================== КОМАНДЫ ДЛЯ МЕНЕДЖЕРОВ ====================
 
-@router.message(Command("close_ticket"))
+@router.message(
+    Command("close_ticket"),
+    flags={
+        "bot_command": {
+            "command": "close_ticket",
+            "description": "Закрыть обращение гостя",
+            "scope": "manager_group",
+        }
+    },
+)
 async def cmd_close_ticket(message: Message):
     """Закрывает текущий тикет (только для менеджеров в треде)"""
+    runtime_settings = await _get_runtime_settings()
+    if message.chat.id != runtime_settings.manager_group_id:
+        return
     # Проверяем, что сообщение в треде
     if not message.message_thread_id:
         await message.reply("Эта команда доступна только в тредах.")
@@ -529,6 +550,8 @@ async def handle_user_default(
                     "Не удалось передать запрос сотруднику. "
                     "Попробуйте ещё раз или используйте команду /help."
                 )
+            elif handoff_processed and "/end_help" not in final_text:
+                final_text += "\n\nЧтобы отменить обращение, используйте /end_help."
             await response_stream.finalize(
                 final_text,
                 reply_markup=reply_markup,
@@ -701,6 +724,8 @@ async def handle_callback_query(
                         "Не удалось передать запрос сотруднику. "
                         "Попробуйте ещё раз или используйте команду /help."
                     )
+                elif handoff_processed and "/end_help" not in final_text:
+                    final_text += "\n\nЧтобы отменить обращение, используйте /end_help."
                 await response_stream.finalize(
                     final_text,
                     reply_markup=reply_markup,

@@ -32,6 +32,27 @@ STREAM_ERROR_SUMMARY = "Сбой при генерации ответа аген
 
 HANDOFF_HOURS = 24
 HANDOFF_FALLBACK_COUNT = 20
+CLAIMED_HANDOFF_REASON = "assistant_claimed_handoff"
+_HANDOFF_PARTY = r"(?:оператор|менеджер|администратор|сотрудник|специалист)\w*"
+_HANDOFF_ACTION = (
+    r"(?:передал(?:а|и)?|передаю|направил(?:а|и)?|направляю|"
+    r"сообщил(?:а|и)?|сообщаю|вызвал(?:а|и)?|вызываю|"
+    r"подключил(?:а|и)?|подключаю)"
+)
+_CLAIMED_HANDOFF_PATTERNS = (
+    re.compile(rf"\b{_HANDOFF_ACTION}\b.{{0,100}}\b{_HANDOFF_PARTY}\b", re.IGNORECASE | re.DOTALL),
+    re.compile(
+        rf"\b(?:запрос|обращение|информаци\w*)\b.{{0,80}}"
+        rf"\b(?:передан\w*|направлен\w*|сообщен\w*)\b.{{0,80}}\b{_HANDOFF_PARTY}\b",
+        re.IGNORECASE | re.DOTALL,
+    ),
+)
+
+
+def _claims_completed_handoff(text: str) -> bool:
+    """Detect a claimed completed transfer, excluding offers and future tense."""
+    normalized = " ".join(text.split())
+    return any(pattern.search(normalized) for pattern in _CLAIMED_HANDOFF_PATTERNS)
 
 
 def _safe_callback_value(value: object) -> str:
@@ -113,6 +134,7 @@ async def _stream_agent_response(
     pending_text_chunks: list[str] = []
     handoff_events: list[dict] = []
     accumulated_chunks: list[str] = []
+    handoff_emitted = False
 
     async def on_tool_call(name: str, args: dict, result: str) -> None:
         audit_result = result
@@ -195,6 +217,7 @@ async def _stream_agent_response(
                 event = handoff_events.pop(0)
                 async for line in _yield_handoff(memory, payload.session_id, **event):
                     yield line
+                handoff_emitted = True
     except Exception:
         logger.exception("graph.astream_response failed for session_id=%s", payload.session_id)
         stream_failed = True
@@ -213,6 +236,7 @@ async def _stream_agent_response(
         accumulated_chunks.append(STREAM_ERROR_MESSAGE)
         async for line in _yield_handoff(memory, payload.session_id, STREAM_ERROR_REASON, STREAM_ERROR_SUMMARY):
             yield line
+        handoff_emitted = True
 
     async for event in flush_pending_events():
         yield event
@@ -222,10 +246,40 @@ async def _stream_agent_response(
         event = handoff_events.pop(0)
         async for line in _yield_handoff(memory, payload.session_id, **event):
             yield line
+        handoff_emitted = True
+
+    full_response = "".join(accumulated_chunks)
+    if not handoff_emitted and _claims_completed_handoff(full_response):
+        summary = (
+            "Агент сообщил пользователю, что запрос уже передан сотруднику. "
+            f"Последний запрос пользователя: {payload.user_message[:500]}"
+        )
+        try:
+            await memory.messages.append_tool_call(
+                payload.session_id,
+                tool_name="handoff_to_operator",
+                tool_args={"reason": CLAIMED_HANDOFF_REASON, "summary": summary},
+                tool_result='{"status": "handoff_requested", "trigger": "claimed_handoff_guard"}',
+            )
+        except Exception:
+            logger.exception(
+                "failed to persist claimed-handoff guard for session_id=%s",
+                payload.session_id,
+            )
+        logger.warning(
+            "assistant claimed a completed handoff without tool call; auto-handoff session_id=%s",
+            payload.session_id,
+        )
+        async for line in _yield_handoff(
+            memory,
+            payload.session_id,
+            CLAIMED_HANDOFF_REASON,
+            summary,
+        ):
+            yield line
 
     yield json.dumps(make_stream_end(payload.session_id), ensure_ascii=False) + "\n"
 
-    full_response = "".join(accumulated_chunks)
     metadata = {"buttons": buttons_metadata} if buttons_metadata else {}
     try:
         await memory.messages.append_message(payload.session_id, "assistant", full_response, metadata=metadata)
