@@ -57,12 +57,6 @@ _UNCLOSED_RICH_MEDIA_BLOCK = re.compile(
 _RICH_MEDIA_TAG = re.compile(r"</?tg-[^>]*>?", re.IGNORECASE)
 _MARKDOWN_LINK = re.compile(r"\[([^\]\n]+)\]\(https?://[^\s)]+\)")
 _MARKDOWN_HTTP_DESTINATION = re.compile(r"(?<=\]\()https?://[^\s)]+")
-_SAFE_RICH_HTML_TAG = re.compile(
-    r"</?tg-(?:slideshow|collage)\s*>"
-    r'|<img\s+src="tg://photo\?id=photo_\d+"\s*/?>',
-    re.IGNORECASE,
-)
-
 _MAX_DRAFT_TEXT_LENGTH = 4096
 _MAX_PHOTO_BYTES = 10 * 1024 * 1024
 _MAX_TOTAL_MEDIA_BYTES = 50 * 1024 * 1024
@@ -106,7 +100,7 @@ class RichMediaResolver:
         matches = list(_MARKDOWN_IMAGE.finditer(markdown))
         if not matches:
             return PreparedRichMessage(
-                rich_message=InputRichMessage(html=markdown_to_rich_html(markdown)),
+                rich_message=InputRichMessage(markdown=markdown),
                 source_urls=[],
             )
 
@@ -134,16 +128,13 @@ class RichMediaResolver:
                 )
             )
             source_urls.append(url)
-            return f'<img src="tg://photo?id={media_id}"/>'
+            return f"![](tg://photo?id={media_id})"
 
         rendered = _MARKDOWN_IMAGE.sub(replace_image, markdown)
         rendered = _EMPTY_RICH_MEDIA_BLOCK.sub("", rendered)
         rendered = re.sub(r"\n{3,}", "\n\n", rendered).strip()
         return PreparedRichMessage(
-            rich_message=InputRichMessage(
-                html=markdown_to_rich_html(rendered),
-                media=media or None,
-            ),
+            rich_message=InputRichMessage(markdown=rendered, media=media or None),
             source_urls=source_urls,
         )
 
@@ -386,23 +377,6 @@ def markdown_to_telegram_html(markdown: str) -> str:
     """Convert the supported agent Markdown subset to safe Telegram HTML."""
     markdown = normalize_markdown_http_urls(_without_rich_media(markdown)).strip()
     return _markdown_inline_to_html(markdown)
-
-
-def markdown_to_rich_html(markdown: str) -> str:
-    """Convert agent Markdown to safe Rich HTML while preserving generated media tags."""
-    markdown = normalize_markdown_http_urls(markdown).strip()
-    protected_tags: list[str] = []
-
-    def protect_tag(match: re.Match[str]) -> str:
-        token = f"AGENTSMITHRICHMEDIATOKEN{len(protected_tags)}END"
-        protected_tags.append(match.group(0))
-        return token
-
-    protected = _SAFE_RICH_HTML_TAG.sub(protect_tag, markdown)
-    rendered = _markdown_inline_to_html(protected)
-    for index, tag in enumerate(protected_tags):
-        rendered = rendered.replace(f"AGENTSMITHRICHMEDIATOKEN{index}END", tag)
-    return rendered
 
 
 def _markdown_inline_to_html(markdown: str) -> str:
