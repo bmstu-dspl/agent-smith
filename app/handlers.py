@@ -440,11 +440,11 @@ async def handle_user_default(
         timestamp=datetime.now(timezone.utc)
     )
 
-    sent_message = await message.answer("⏳ Генерация ответа...")
     response_stream = AgentResponseStream(
-        sent_message,
         bot=message.bot,
         chat_id=message.chat.id,
+        draft_id=message.message_id,
+        message_thread_id=message.message_thread_id,
     )
     full_text = ""
     buttons = []
@@ -456,6 +456,7 @@ async def handle_user_default(
             message_thread_id=message.message_thread_id,
             interval=4.0,
         ):
+            await response_stream.start()
             runtime_settings = await _get_runtime_settings()
             async with httpx.AsyncClient(timeout=60.0) as client:
                 async with client.stream(
@@ -610,12 +611,10 @@ async def handle_callback_query(
     except Exception as e:
         logger.warning(f"Не удалось удалить кнопки: {e}")
 
-    # Отправляем начальное сообщение
-    sent_message = await callback.message.answer("⏳ Обработка действия...")
     response_stream = AgentResponseStream(
-        sent_message,
         bot=callback.bot,
         chat_id=chat_id,
+        message_thread_id=callback.message.message_thread_id,
     )
 
     try:
@@ -641,6 +640,7 @@ async def handle_callback_query(
                 message_thread_id=callback.message.message_thread_id,
                 interval=4.0,
             ):
+                await response_stream.start()
                 async with client.stream(
                     "POST",
                     runtime_settings.ai_agent_url.rstrip("/") + "/agent/process",

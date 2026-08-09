@@ -143,6 +143,13 @@ async def _stream_agent_response(
             handoff_events.append({"reason": args.get("reason", ""), "summary": args.get("summary", "")})
 
     async def on_ask_user(args: dict, result: str) -> None:
+        try:
+            parsed_result = json.loads(result)
+        except (TypeError, json.JSONDecodeError):
+            parsed_result = None
+        if not isinstance(parsed_result, dict) or parsed_result.get("status") != "waiting_user":
+            return
+
         buttons, mapping, question = _build_ask_user_buttons(args)
 
         if buttons:
@@ -154,7 +161,9 @@ async def _stream_agent_response(
         # ask_user is authoritative for the visible question. Some models also
         # emit the same sentence immediately before the tool call; do not add a
         # second copy when that text is already present in the response stream.
-        visible_text = _normalized_visible_text("".join(accumulated_chunks))
+        visible_text = _normalized_visible_text(
+            "".join([*accumulated_chunks, *pending_text_chunks])
+        )
         normalized_question = _normalized_visible_text(question)
         if normalized_question and not visible_text.endswith(normalized_question):
             pending_text_chunks.append(question)

@@ -131,6 +131,69 @@ def test_ask_user_does_not_duplicate_question_already_emitted_by_model() -> None
     assert [button["text"] for button in button_events[-1]["buttons"]] == ["Two"]
 
 
+class FailedThenSuccessfulAskUserGraph(McpThenAskUserGraph):
+    async def astream_response(
+        self,
+        payload,
+        on_tool_call=None,
+        on_ask_user=None,
+    ):
+        question = "How many guests will stay?"
+        failed_args = {"question": question, "options": ["One", "Two"]}
+        await on_ask_user(
+            failed_args,
+            "Error invoking tool 'ask_user': options must contain objects",
+        )
+        await on_tool_call(
+            "ask_user",
+            failed_args,
+            "Error invoking tool 'ask_user': options must contain objects",
+        )
+        successful_args = {
+            "question": question,
+            "options": [
+                {
+                    "label": "Two",
+                    "value": "2",
+                    "user_message": "There will be two guests.",
+                }
+            ],
+        }
+        await on_ask_user(
+            successful_args,
+            json.dumps({"status": "waiting_user", "question": question}),
+        )
+        await on_tool_call(
+            "ask_user",
+            successful_args,
+            json.dumps({"status": "waiting_user", "question": question}),
+        )
+        if False:
+            yield ""
+
+
+def test_failed_ask_user_retry_emits_one_question_and_keyboard() -> None:
+    app = FastAPI()
+    app.include_router(router)
+    app.state.graph = FailedThenSuccessfulAskUserGraph()
+    app.state.memory = FakeMemory()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/agent/process",
+            json={"session_id": "ask-retry", "user_message": "Find a room"},
+        )
+
+    events = [json.loads(line) for line in response.text.splitlines()]
+    text = "".join(
+        event["content"] for event in events if event["type"] == "text_chunk"
+    )
+    button_events = [event for event in events if event["type"] == "buttons"]
+
+    assert text == "How many guests will stay?"
+    assert [button["text"] for button in button_events[-1]["buttons"]] == ["Two"]
+
+
 class LoadSkillGraph:
     async def adecide_buttons(self, payload):
         return []

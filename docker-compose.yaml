@@ -132,6 +132,7 @@ services:
       REDIS_PORT: "6379"
       REDIS_DB: "0"
       REDIS_URL: redis://redis:6379/0
+      RICH_MEDIA_ALLOWED_HOSTS: ${RICH_MEDIA_ALLOWED_HOSTS:-partner-static.tlintegration.com}
     secrets:
       - postgres_password
       - source: google_service_account

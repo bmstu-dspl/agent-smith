@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from collections.abc import AsyncIterator
 
@@ -287,8 +288,16 @@ class AgentGraph(StubGraph):
                     tool_result = _chunk_to_text(chunk)
 
                     if tool_name in {"ask_user", "request_clarification"} and on_ask_user is not None:
-                        waiting_for_user = True
-                        await on_ask_user(tool_args, tool_result)
+                        try:
+                            parsed_tool_result = json.loads(tool_result)
+                        except (TypeError, json.JSONDecodeError):
+                            parsed_tool_result = None
+                        if (
+                            isinstance(parsed_tool_result, dict)
+                            and parsed_tool_result.get("status") == "waiting_user"
+                        ):
+                            waiting_for_user = True
+                            await on_ask_user(tool_args, tool_result)
 
                     if on_tool_call is not None:
                         await on_tool_call(tool_name, tool_args, tool_result)
