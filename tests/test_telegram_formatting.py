@@ -144,8 +144,15 @@ async def test_rich_markdown_sends_booking_url_ampersands_without_escaping() -> 
 
     for markdown, expected in (
         (escaped_url, url),
-        (f"[{escaped_url}]({escaped_url})", f"[{url}]({url})"),
-        (f"[Забронировать]({escaped_url})", f"[Забронировать]({url})"),
+        (
+            f"[{escaped_url}]({escaped_url})",
+            f'<a href="{url.replace("&", "&amp;")}">'
+            f'{url.replace("&", "&amp;")}</a>',
+        ),
+        (
+            f"[Забронировать]({escaped_url})",
+            f'<a href="{url.replace("&", "&amp;")}">Забронировать</a>',
+        ),
     ):
         prepared = await resolver.prepare(markdown)
 
@@ -166,7 +173,13 @@ async def test_rich_markdown_preserves_model_lists_and_line_breaks() -> None:
     prepared = await resolver.prepare(markdown)
 
     assert prepared.rich_message.html is None
-    assert prepared.rich_message.markdown == markdown
+    assert prepared.rich_message.markdown == (
+        "**Стандарт с раздельными кроватями**\n"
+        "* 7 900 ₽ — без завтрака\n"
+        "* 9 300 ₽ — с завтраком\n"
+        '<a href="https://hotel.example/booking?room=42&amp;rate=7">'
+        "Забронировать</a>"
+    )
 
 
 def test_html_fallback_does_not_double_escape_booking_url_entities() -> None:

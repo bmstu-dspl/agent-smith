@@ -56,6 +56,9 @@ _UNCLOSED_RICH_MEDIA_BLOCK = re.compile(
 )
 _RICH_MEDIA_TAG = re.compile(r"</?tg-[^>]*>?", re.IGNORECASE)
 _MARKDOWN_LINK = re.compile(r"\[([^\]\n]+)\]\(https?://[^\s)]+\)")
+_MARKDOWN_HTTP_LINK = re.compile(
+    r"(?<!!)\[(?P<label>[^\]\n]+)\]\((?P<url>https?://[^\s)]+)\)"
+)
 _HTTP_URL = re.compile(r"https?://[^\s<>()\[\]]+")
 _HTML_ESCAPED_AMPERSAND = re.compile(
     r"&(?:amp|#0*38|#x0*26);",
@@ -104,7 +107,9 @@ class RichMediaResolver:
         matches = list(_MARKDOWN_IMAGE.finditer(markdown))
         if not matches:
             return PreparedRichMessage(
-                rich_message=InputRichMessage(markdown=markdown),
+                rich_message=InputRichMessage(
+                    markdown=markdown_links_to_rich_markdown(markdown)
+                ),
                 source_urls=[],
             )
 
@@ -138,7 +143,10 @@ class RichMediaResolver:
         rendered = _EMPTY_RICH_MEDIA_BLOCK.sub("", rendered)
         rendered = re.sub(r"\n{3,}", "\n\n", rendered).strip()
         return PreparedRichMessage(
-            rich_message=InputRichMessage(markdown=rendered, media=media or None),
+            rich_message=InputRichMessage(
+                markdown=markdown_links_to_rich_markdown(rendered),
+                media=media or None,
+            ),
             source_urls=source_urls,
         )
 
@@ -373,6 +381,18 @@ def normalize_markdown_http_urls(markdown: str) -> str:
     """Decode accidental HTML ampersands in every HTTP URL once."""
     return _HTTP_URL.sub(
         lambda match: _HTML_ESCAPED_AMPERSAND.sub("&", match.group(0)),
+        markdown,
+    )
+
+
+def markdown_links_to_rich_markdown(markdown: str) -> str:
+    """Keep Rich Markdown but route HTTP links through its HTML parser."""
+    markdown = normalize_markdown_http_urls(markdown)
+    return _MARKDOWN_HTTP_LINK.sub(
+        lambda match: (
+            f'<a href="{html.escape(match.group("url"), quote=True)}">'
+            f'{html.escape(match.group("label"))}</a>'
+        ),
         markdown,
     )
 
