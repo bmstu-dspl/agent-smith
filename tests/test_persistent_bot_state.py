@@ -199,12 +199,15 @@ async def test_forwarded_operator_messages_use_quotes_and_first_name() -> None:
         from_user=SimpleNamespace(id=42),
         text="Спасибо <вам>",
         caption=None,
+        answer=AsyncMock(),
     )
     assert await service.forward_message_to_manager(user_message)
     to_manager = bot.send_message.await_args.kwargs
     assert to_manager["parse_mode"] == "HTML"
     assert "<b>Сообщение гостя</b>" in to_manager["text"]
     assert "<blockquote>Спасибо &lt;вам&gt;</blockquote>" in to_manager["text"]
+    manager_message.reply.assert_awaited_once_with("Сообщение передано пользователю.")
+    user_message.answer.assert_awaited_once_with("Сообщение передано менеджеру.")
 
 
 @pytest.mark.asyncio

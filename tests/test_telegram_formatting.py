@@ -9,6 +9,7 @@ from aiogram.types import BufferedInputFile
 from app.telegram_formatting import (
     AgentResponseStream,
     RichMediaResolver,
+    markdown_to_rich_html,
     markdown_to_stream_text,
     markdown_to_telegram_html,
 )
@@ -78,6 +79,21 @@ def test_markdown_to_telegram_html_escapes_untrusted_text_and_unsafe_links() -> 
     )
 
 
+def test_markdown_to_rich_html_preserves_generated_media_and_escapes_links() -> None:
+    markdown = (
+        '<tg-slideshow>\n<img src="tg://photo?id=photo_1"/>\n</tg-slideshow>\n'
+        "**Стандартный номер**\n"
+        "[Забронировать](https://hotel.example/booking?room=42&rate=7)"
+    )
+
+    assert markdown_to_rich_html(markdown) == (
+        '<tg-slideshow>\n<img src="tg://photo?id=photo_1"/>\n</tg-slideshow>\n'
+        "<b>Стандартный номер</b>\n"
+        '<a href="https://hotel.example/booking?room=42&amp;rate=7">'
+        "Забронировать</a>"
+    )
+
+
 @pytest.mark.asyncio
 async def test_agent_response_stream_uses_native_plain_draft() -> None:
     bot = AsyncMock()
@@ -122,7 +138,8 @@ async def test_rich_media_resolver_downloads_http_images_for_multipart_upload() 
 
     prepared = await resolver.prepare(f"![]({url})\n**Номер**")
 
-    assert prepared.rich_message.markdown == "![](tg://photo?id=photo_1)\n**Номер**"
+    assert prepared.rich_message.markdown is None
+    assert prepared.rich_message.html == '<img src="tg://photo?id=photo_1"/>\n<b>Номер</b>'
     media = prepared.rich_message.media[0].media.media
     assert isinstance(media, BufferedInputFile)
     assert media.data == b"jpeg-data"
@@ -137,8 +154,10 @@ async def test_rich_message_decodes_html_entities_inside_booking_url() -> None:
         "[Забронировать](https://hotel.example/booking?room=42&amp;rate=7)"
     )
 
-    assert prepared.rich_message.markdown == (
-        "[Забронировать](https://hotel.example/booking?room=42&rate=7)"
+    assert prepared.rich_message.markdown is None
+    assert prepared.rich_message.html == (
+        '<a href="https://hotel.example/booking?room=42&amp;rate=7">'
+        "Забронировать</a>"
     )
 
 
@@ -202,7 +221,8 @@ async def test_rich_media_resolver_does_not_fetch_untrusted_urls() -> None:
         "</tg-slideshow>\n**Номер**"
     )
 
-    assert prepared.rich_message.markdown == "**Номер**"
+    assert prepared.rich_message.markdown is None
+    assert prepared.rich_message.html == "<b>Номер</b>"
     assert prepared.rich_message.media is None
     assert http.urls == []
 

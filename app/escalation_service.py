@@ -304,6 +304,14 @@ class EscalationService:
                 ),
                 parse_mode="HTML",
             )
+            try:
+                await manager_message.reply("Сообщение передано пользователю.")
+            except Exception:
+                logger.warning(
+                    "Message reached user %s, but manager confirmation failed",
+                    user_id,
+                    exc_info=True,
+                )
             return True
         except Exception:
             logger.exception("Failed to forward manager message for thread %s", thread_id)
@@ -331,6 +339,14 @@ class EscalationService:
                 ),
                 parse_mode="HTML",
             )
+            try:
+                await user_message.answer("Сообщение передано менеджеру.")
+            except Exception:
+                logger.warning(
+                    "Message from user %s reached manager, but user confirmation failed",
+                    user_id,
+                    exc_info=True,
+                )
             return True
         except Exception:
             logger.exception("Failed to forward user %s message", user_id)
