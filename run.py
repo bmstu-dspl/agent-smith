@@ -12,7 +12,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.redis import DefaultKeyBuilder, RedisEventIsolation, RedisStorage
 from aiogram.types import WebhookInfo
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiogram.webhook.aiohttp_server import setup_application
 from aiohttp import web
 import httpx
 from sqlalchemy.orm import sessionmaker
@@ -24,6 +24,7 @@ from app.escalation_service import EscalationService
 from app.bot_commands import register_bot_commands
 from app.handlers import UserStates, get_esc_service, router, set_esc_service, set_settings_provider
 from app.live_config import LiveTelegramSettingsProvider
+from app.telegram_runtime import LiveTelegramBotRuntime, LiveTelegramWebhookHandler
 from app.middleware.session_middleware import SessionMiddleware
 from app_runtime import AppRuntime
 from config import LOG_LEVEL, PORT
@@ -42,6 +43,7 @@ redis_client = None
 runtime: AppRuntime | None = None
 bot_instance: Bot | None = None
 settings_provider: LiveTelegramSettingsProvider | None = None
+telegram_bot_runtime: LiveTelegramBotRuntime | None = None
 
 FSM_TTL_SECONDS = 60 * 60 * 24 * 30
 
@@ -76,7 +78,7 @@ def _env_bool(name: str, *, default: bool = False) -> bool:
 
 async def on_startup(dispatcher: Dispatcher) -> None:
     """Действия при запуске бота"""
-    global redis_client, runtime, bot_instance, settings_provider
+    global redis_client, runtime, bot_instance, settings_provider, telegram_bot_runtime
     
     logger.info("=" * 50)
     logger.info("ON_STARTUP CALLED!")
@@ -103,11 +105,13 @@ async def on_startup(dispatcher: Dispatcher) -> None:
         logger.error(f"Redis initialization failed: {e}")
         raise
 
-    if runtime is None or settings_provider is None:
+    if runtime is None or settings_provider is None or telegram_bot_runtime is None:
         raise RuntimeError("bot runtime was not initialized before dispatcher startup")
     dispatcher["runtime"] = runtime
     dispatcher["memory"] = runtime.memory
-    current_settings = await settings_provider.get()
+    # Keep the Bot instance, webhook path, and startup settings from one revision.
+    # A newer revision, if any, is applied atomically by the watcher below.
+    current_settings = telegram_bot_runtime.settings
     
     # Настройка SessionMiddleware с Redis (если доступен)
     session_middleware = SessionMiddleware(redis_client)
@@ -192,20 +196,16 @@ async def on_startup(dispatcher: Dispatcher) -> None:
     logger.info("=" * 50)
     logger.info("BOT STARTED SUCCESSFULLY!")
     logger.info("=" * 50)
+    telegram_bot_runtime.start()
 
 
 async def on_shutdown(dispatcher: Dispatcher) -> None:
     """Действия при остановке бота"""
-    global runtime, redis_client, bot_instance
+    global runtime, redis_client, bot_instance, telegram_bot_runtime
     
     logger.info("=" * 50)
     logger.info("ON_SHUTDOWN CALLED!")
     logger.info("=" * 50)
-    
-    # Получаем бота
-    bot = dispatcher.workflow_data.get('bot')
-    if bot is None:
-        bot = bot_instance
     
     # Закрываем runtime
     if runtime is not None:
@@ -231,21 +231,11 @@ async def on_shutdown(dispatcher: Dispatcher) -> None:
         except Exception as e:
             logger.error(f"Error closing Redis: {e}")
     
-    # Удаляем вебхук
-    if bot:
-        if _env_bool("DELETE_WEBHOOK_ON_SHUTDOWN"):
-            try:
-                await bot.delete_webhook()
-                logger.info("Webhook deleted")
-            except Exception as e:
-                logger.error(f"Error deleting webhook: {e}")
-        
-        # Закрываем сессию бота
-        try:
-            await bot.session.close()
-            logger.info("Bot session closed")
-        except Exception as e:
-            logger.error(f"Error closing bot session: {e}")
+    if telegram_bot_runtime is not None:
+        await telegram_bot_runtime.close()
+        telegram_bot_runtime = None
+        bot_instance = None
+        logger.info("Telegram bot runtime closed")
     
     logger.info("Bot stopped successfully!")
 
@@ -263,7 +253,7 @@ async def healthcheck(_: web.Request) -> web.Response:
 
 def main() -> None:
     """Основная функция запуска бота"""
-    global bot_instance, runtime, settings_provider
+    global bot_instance, runtime, settings_provider, telegram_bot_runtime
     
     try:
         runtime = AppRuntime.from_env()
@@ -288,6 +278,42 @@ def main() -> None:
         
         # FSM is operational state, so it must survive container replacements.
         dp = build_dispatcher()
+
+        async def prepare_bot(bot: Bot, current_settings) -> None:
+            await register_bot_commands(
+                bot,
+                router,
+                current_settings.manager_group_id,
+            )
+
+        async def bot_switched(bot: Bot, _current_settings) -> None:
+            global bot_instance
+            bot_instance = bot
+            esc_service = get_esc_service()
+            if esc_service is not None:
+                esc_service.bot = bot
+
+        def bot_factory(token: str) -> Bot:
+            return Bot(
+                token=token,
+                default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+            )
+
+        telegram_bot_runtime = LiveTelegramBotRuntime(
+            dispatcher=dp,
+            settings_provider=settings_provider,
+            initial_settings=initial_settings,
+            initial_bot=bot_instance,
+            bot_factory=bot_factory,
+            prepare_bot=prepare_bot,
+            bot_switched=bot_switched,
+            poll_interval_seconds=float(os.getenv("TELEGRAM_SETTINGS_POLL_SECONDS", "1")),
+            retired_bot_grace_seconds=float(
+                os.getenv("TELEGRAM_RETIRED_BOT_GRACE_SECONDS", "30")
+            ),
+            drop_pending_updates=_env_bool("DROP_PENDING_UPDATES"),
+            delete_webhook_on_shutdown=_env_bool("DELETE_WEBHOOK_ON_SHUTDOWN"),
+        )
         
         # Сохраняем бота в workflow_data
         dp.workflow_data['bot'] = bot_instance
@@ -304,11 +330,11 @@ def main() -> None:
         app.router.add_get("/healthz", healthcheck)
         
         # Настраиваем обработчик вебхука
-        webhook_requests_handler = SimpleRequestHandler(
+        webhook_requests_handler = LiveTelegramWebhookHandler(
             dispatcher=dp,
-            bot=bot_instance,
+            runtime=telegram_bot_runtime,
         )
-        webhook_requests_handler.register(app, path=initial_settings.webhook_path)
+        webhook_requests_handler.register(app, path="/webhook/{token_digest}")
         
         # ВАЖНО: используем setup_application для правильной инициализации
         setup_application(app, dp, bot=bot_instance)
