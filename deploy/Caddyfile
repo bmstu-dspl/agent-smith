@@ -18,3 +18,8 @@
 	respond /healthz 200
 	respond 404
 }
+
+roster.mgeine.com {
+	encode zstd gzip
+	reverse_proxy roster-app:8000
+}
